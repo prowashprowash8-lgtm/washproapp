@@ -1,0 +1,2 @@
+# Stripe envoie Stripe-Signature, pas un JWT Supabase.
+verify_jwt = false

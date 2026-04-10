@@ -1,0 +1,2 @@
+# Appelée par le navigateur après redirection Stripe (pas de JWT).
+verify_jwt = false

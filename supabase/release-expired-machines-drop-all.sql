@@ -1,0 +1,3 @@
+-- Si DROP FUNCTION ... release_expired_machines() CASCADE échoue (signature inconnue) :
+-- Database → Extensions ou SQL : liste des fonctions, supprime release_expired_machines à la main,
+-- puis exécute release-expired-machines.sql (sans la ligne DROP si la fonction n’existe plus).
