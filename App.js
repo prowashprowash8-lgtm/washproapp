@@ -11,6 +11,7 @@ import { createStackNavigator } from '@react-navigation/stack';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
 import { LanguageProvider, useLanguage } from './src/context/LanguageContext';
 import { LaundryTimerProvider } from './src/context/LaundryTimerContext';
+import { RefundActivityBadgeProvider, useRefundActivityBadge } from './src/context/RefundActivityBadgeContext';
 import { configureLaundryNotificationHandler } from './src/services/laundryTimerService';
 import { colors, typography, borderRadius } from './src/theme/colors';
 
@@ -56,12 +57,18 @@ function ProfileStack() {
   );
 }
 
-function TabIcon({ name, label, focused }) {
+function TabIcon({ name, label, focused, badge }) {
   const iconColor = focused ? colors.primary : '#000000';
+  const n = typeof badge === 'number' && !Number.isNaN(badge) ? badge : 0;
   return (
     <View style={[styles.iconFrame, focused && styles.iconFrameFocused]}>
-      <View style={styles.iconWrapper}>
+      <View style={styles.iconBadgeWrap}>
         <MaterialCommunityIcons name={name} size={20} color={iconColor} />
+        {n > 0 ? (
+          <View style={styles.tabBadge} accessibilityLabel={`${n}`}>
+            <Text style={styles.tabBadgeText}>{n > 99 ? '99+' : n}</Text>
+          </View>
+        ) : null}
       </View>
       <Text style={[styles.frameLabel, { color: iconColor }]} numberOfLines={1}>
         {label}
@@ -72,6 +79,7 @@ function TabIcon({ name, label, focused }) {
 
 function MainTabs() {
   const { t } = useLanguage();
+  const { unseenCount, refresh: refreshRefundBadge } = useRefundActivityBadge();
   return (
     <Tab.Navigator
       tabBar={(props) => <ScrollableTabBar {...props} />}
@@ -90,14 +98,29 @@ function MainTabs() {
             <TabIcon name="washing-machine" label={t('tabWash')} focused={focused} />
           ),
         }}
+        listeners={{
+          tabPress: () => {
+            refreshRefundBadge();
+          },
+        }}
       />
       <Tab.Screen
         name="Activité"
         component={TransactionScreen}
         options={{
           tabBarIcon: ({ focused }) => (
-            <TabIcon name="format-list-bulleted" label={t('tabActivity')} focused={focused} />
+            <TabIcon
+              name="format-list-bulleted"
+              label={t('tabActivity')}
+              focused={focused}
+              badge={unseenCount}
+            />
           ),
+        }}
+        listeners={{
+          tabPress: () => {
+            refreshRefundBadge();
+          },
         }}
       />
       <Tab.Screen
@@ -110,6 +133,7 @@ function MainTabs() {
         }}
         listeners={({ navigation }) => ({
           tabPress: (e) => {
+            refreshRefundBadge();
             const state = navigation.getState();
             const current = state.routes[state.index];
             if (current?.name !== 'Profil') return;
@@ -123,6 +147,18 @@ function MainTabs() {
         })}
       />
     </Tab.Navigator>
+  );
+}
+
+function MainTabsWithBadge() {
+  const { user } = useAuth();
+  if (!user?.id) {
+    return <MainTabs />;
+  }
+  return (
+    <RefundActivityBadgeProvider userId={user.id}>
+      <MainTabs />
+    </RefundActivityBadgeProvider>
   );
 }
 
@@ -179,7 +215,7 @@ function AppNavigator() {
       <NavigationContainer>
         <Stack.Navigator screenOptions={{ headerShown: false }}>
           {user ? (
-            <Stack.Screen name="Main" component={MainTabs} />
+            <Stack.Screen name="Main" component={MainTabsWithBadge} />
           ) : (
             <Stack.Screen name="Auth" component={AuthNavigator} />
           )}
@@ -238,22 +274,43 @@ const styles = StyleSheet.create({
     flex: 1,
     ...(Platform.OS === 'web' && { minHeight: '100vh' }),
   },
-  iconWrapper: {
-    width: 26,
+  iconBadgeWrap: {
+    width: 36,
     height: 26,
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
+  },
+  tabBadge: {
+    position: 'absolute',
+    top: -2,
+    right: -2,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    borderRadius: 9,
+    backgroundColor: '#EF4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 2,
+  },
+  tabBadgeText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '700',
+    lineHeight: 12,
   },
   iconFrame: {
     minWidth: 68,
-    maxWidth: 72,
-    paddingHorizontal: 10,
+    maxWidth: 78,
+    paddingHorizontal: 8,
     paddingVertical: 10,
     borderRadius: borderRadius.md,
     borderWidth: 2,
     borderColor: colors.border,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'visible',
   },
   iconFrameFocused: {
     borderColor: colors.primary,

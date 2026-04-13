@@ -95,6 +95,8 @@ async function createCheckoutSessionFetch(params: {
   form.append('cancel_url', params.cancelUrl);
   for (const [k, v] of Object.entries(params.metadata)) {
     form.append(`metadata[${k}]`, String(v ?? ''));
+    // Sans cela, le PaymentIntent n’a souvent pas les clés → refund.created ignorait les remboursements portefeuille
+    form.append(`payment_intent_data[metadata][${k}]`, String(v ?? ''));
   }
 
   const res = await fetch(STRIPE_CHECKOUT_SESSIONS, {

@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
+  AppState,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -44,6 +45,13 @@ export default function WalletScreen({ navigation }) {
       refresh();
     }, [refresh])
   );
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active' && user?.id) refresh();
+    });
+    return () => sub.remove();
+  }, [refresh, user?.id]);
 
   const handleRecharge = async (amountEur) => {
     if (!user?.id) {

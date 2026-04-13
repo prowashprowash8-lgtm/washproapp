@@ -1,8 +1,9 @@
 // Edge Function : reçoit les webhooks Stripe
-// Quand checkout.session.completed → insère dans machine_commands pour l'ESP32
+// - checkout.session.completed → recharge portefeuille ou paiement machine + START
+// - refund.created → débite le portefeuille si la recharge était checkout_kind=wallet_recharge
 // Déployer : supabase functions deploy stripe-webhook
-// Secrets : STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
-// Configurer l'URL dans Stripe Dashboard : https://xxx.supabase.co/functions/v1/stripe-webhook
+// Secrets : STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET + SUPABASE_SERVICE_ROLE_KEY
+// Stripe Dashboard → Webhooks : inclure « refund.created » (et checkout.session.completed)
 
 import Stripe from 'https://esm.sh/stripe@14?target=deno';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -53,10 +54,18 @@ Deno.serve(async (req) => {
 
     // Recharge portefeuille (une seule transaction Stripe → crédit interne)
     if (checkoutKind === 'wallet_recharge' && userId && userId.length > 10 && amountCents > 0) {
+      const piRaw = session.payment_intent;
+      const paymentIntentId =
+        typeof piRaw === 'string'
+          ? piRaw
+          : piRaw && typeof piRaw === 'object' && 'id' in (piRaw as Stripe.PaymentIntent)
+            ? (piRaw as Stripe.PaymentIntent).id
+            : null;
       const { error: rechargeErr } = await supabase.rpc('apply_wallet_recharge', {
         p_user_id: userId,
         p_amount_centimes: amountCents,
         p_stripe_session_id: session.id,
+        p_stripe_payment_intent_id: paymentIntentId,
       });
       if (rechargeErr) {
         console.error('apply_wallet_recharge:', rechargeErr);
@@ -98,6 +107,100 @@ Deno.serve(async (req) => {
         status: 'pending',
       });
       console.log(`Commande START (legacy) pour ESP32: ${esp32Id}`);
+    }
+  }
+
+  // Remboursement Stripe (Dashboard ou API) : aligner le solde portefeuille interne
+  if (event.type === 'refund.created') {
+    const refund = event.data.object as Stripe.Refund;
+    const amountCents = refund.amount;
+    const chargeRef = refund.charge;
+    const chargeId =
+      typeof chargeRef === 'string'
+        ? chargeRef
+        : chargeRef && typeof chargeRef === 'object'
+          ? (chargeRef as Stripe.Charge).id
+          : null;
+
+    if (!chargeId || !amountCents) {
+      return new Response(JSON.stringify({ received: true, ignored: 'refund_no_charge' }), {
+        headers: { 'Content-Type': 'application/json' },
+        status: 200,
+      });
+    }
+
+    const supabase = createClient(
+      Deno.env.get('SUPABASE_URL')!,
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+    );
+
+    try {
+      const charge = await stripe.charges.retrieve(chargeId, { expand: ['payment_intent'] });
+      const piRef = charge.payment_intent;
+      let paymentIntent: Stripe.PaymentIntent;
+
+      if (typeof piRef === 'string') {
+        paymentIntent = await stripe.paymentIntents.retrieve(piRef);
+      } else if (piRef && typeof piRef === 'object') {
+        paymentIntent = piRef as Stripe.PaymentIntent;
+      } else {
+        return new Response(JSON.stringify({ received: true, ignored: 'refund_no_pi' }), {
+          headers: { 'Content-Type': 'application/json' },
+          status: 200,
+        });
+      }
+
+      const meta = paymentIntent.metadata || {};
+      let userIdToDebit = '';
+      if (String(meta.checkout_kind || '').trim() === 'wallet_recharge') {
+        const u = String(meta.user_id || '').trim();
+        if (u.length >= 10) userIdToDebit = u;
+      }
+      // Repli : beaucoup de sessions Checkout n’exposent pas checkout_kind/user_id sur le PaymentIntent
+      if (!userIdToDebit) {
+        const { data: wtRow } = await supabase
+          .from('wallet_transactions')
+          .select('user_id')
+          .eq('type', 'recharge')
+          .eq('stripe_payment_intent_id', paymentIntent.id)
+          .maybeSingle();
+        const uid = wtRow && typeof wtRow === 'object' && 'user_id' in wtRow
+          ? String((wtRow as { user_id: string }).user_id || '')
+          : '';
+        if (uid.length >= 10) userIdToDebit = uid;
+      }
+      if (!userIdToDebit) {
+        return new Response(JSON.stringify({ received: true, ignored: 'refund_not_wallet' }), {
+          headers: { 'Content-Type': 'application/json' },
+          status: 200,
+        });
+      }
+
+      const { error: refundErr } = await supabase.rpc('apply_wallet_stripe_refund', {
+        p_user_id: userIdToDebit,
+        p_amount_centimes: amountCents,
+        p_stripe_refund_id: refund.id,
+      });
+
+      if (refundErr) {
+        console.error('apply_wallet_stripe_refund:', refundErr);
+        return new Response(JSON.stringify({ error: refundErr.message }), {
+          headers: { 'Content-Type': 'application/json' },
+          status: 500,
+        });
+      }
+
+      console.log('Portefeuille débité (remboursement Stripe):', userIdToDebit, amountCents, refund.id);
+      return new Response(JSON.stringify({ received: true, wallet_debit: true }), {
+        headers: { 'Content-Type': 'application/json' },
+        status: 200,
+      });
+    } catch (e) {
+      console.error('refund.created handler:', e);
+      return new Response(
+        JSON.stringify({ error: e instanceof Error ? e.message : 'refund_handler_error' }),
+        { headers: { 'Content-Type': 'application/json' }, status: 500 }
+      );
     }
   }
 

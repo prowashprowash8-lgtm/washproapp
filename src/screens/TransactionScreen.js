@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   StyleSheet,
   ScrollView,
@@ -17,6 +18,7 @@ import { StatusBar } from 'expo-status-bar';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
+import { useRefundActivityBadge } from '../context/RefundActivityBadgeContext';
 import { useLaundryTimer } from '../context/LaundryTimerContext';
 import { getUserTransactions } from '../services/transactionService';
 import { colors, spacing, typography, borderRadius } from '../theme/colors';
@@ -66,6 +68,13 @@ export default function TransactionScreen() {
     minDurationMin,
     maxDurationMin,
   } = useLaundryTimer();
+  const { markAllSeen } = useRefundActivityBadge();
+
+  useFocusEffect(
+    useCallback(() => {
+      if (user?.id) markAllSeen();
+    }, [user?.id, markAllSeen])
+  );
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -181,49 +190,82 @@ export default function TransactionScreen() {
           />
         }
       >
-        {transactions.map((tx) => (
-          <View key={tx.id} style={styles.card}>
-            <View style={styles.cardHeader}>
-              <View style={styles.cardLeft}>
-                <MaterialCommunityIcons
-                  name={
-                    tx.payment_method === 'promo'
-                      ? 'ticket-percent'
-                      : tx.payment_method === 'wallet'
-                        ? 'wallet'
-                        : 'credit-card'
-                  }
-                  size={24}
-                  color={colors.primary}
-                />
-                <View style={styles.cardInfo}>
-                  <Text style={styles.machineLabel}>{t('machineStarted')}</Text>
-                  <Text style={styles.machineName}>
-                    {tx.machine_name || t('machine')}
-                  </Text>
-                  <Text style={styles.emplacementName}>
-                    {tx.emplacement_name ? `${tx.emplacement_name}` : t('laundry')}
-                  </Text>
+        {transactions.map((tx) => {
+          const rr = tx.refund_request_statut || null;
+          const compensation = tx.refund_compensation_code || null;
+          const compensationUsed = tx.refund_compensation_used === true;
+          const legacyRefunded = tx.status === 'refunded';
+          return (
+            <View key={tx.id} style={styles.card}>
+              <View style={styles.cardHeader}>
+                <View style={styles.cardLeft}>
+                  <MaterialCommunityIcons
+                    name={
+                      tx.payment_method === 'promo'
+                        ? 'ticket-percent'
+                        : tx.payment_method === 'wallet'
+                          ? 'wallet'
+                          : 'credit-card'
+                    }
+                    size={24}
+                    color={colors.primary}
+                  />
+                  <View style={styles.cardInfo}>
+                    <Text style={styles.machineLabel}>{t('machineStarted')}</Text>
+                    <Text style={styles.machineName}>
+                      {tx.machine_name || t('machine')}
+                    </Text>
+                    <Text style={styles.emplacementName}>
+                      {tx.emplacement_name ? `${tx.emplacement_name}` : t('laundry')}
+                    </Text>
+                  </View>
                 </View>
+                <Text style={[
+                  styles.amount,
+                  legacyRefunded && !rr && styles.amountRefunded,
+                ]}>
+                  {legacyRefunded && !rr
+                    ? t('refunded')
+                    : tx.payment_method === 'promo'
+                      ? t('free')
+                      : `€ ${Number(tx.amount).toFixed(2)}`}
+                </Text>
               </View>
-              <Text style={[
-                styles.amount,
-                tx.status === 'refunded' && styles.amountRefunded,
-              ]}>
-                {tx.status === 'refunded' ? t('refunded') : tx.payment_method === 'promo' ? t('free') : `€ ${Number(tx.amount).toFixed(2)}`}
-              </Text>
-            </View>
-            <View style={styles.cardFooter}>
-              <Text style={styles.date}>{formatDate(tx.created_at, locale)}</Text>
-              {tx.promo_code && (
-                <Text style={styles.promo}>{t('promoCodeLabel')}: {tx.promo_code}</Text>
+              {rr === 'approved' && (
+                <View style={styles.refundChipRow}>
+                  <Text style={styles.refundChipApproved}>{t('refundRequestApproved')}</Text>
+                </View>
               )}
-              {tx.status === 'refunded' && tx.refund_reason && (
-                <Text style={styles.refundReason}>{tx.refund_reason}</Text>
+              {rr === 'rejected' && (
+                <View style={styles.refundChipRow}>
+                  <Text style={styles.refundChipRejected}>{t('refundRequestRejected')}</Text>
+                </View>
               )}
+              {rr === 'pending' && (
+                <View style={styles.refundChipRow}>
+                  <Text style={styles.refundChipPending}>{t('refundRequestPending')}</Text>
+                </View>
+              )}
+              <View style={styles.cardFooter}>
+                <Text style={styles.date}>{formatDate(tx.created_at, locale)}</Text>
+                {tx.promo_code && (
+                  <Text style={styles.promo}>{t('promoCodeLabel')}: {tx.promo_code}</Text>
+                )}
+                {rr === 'approved' && compensation ? (
+                  <Text
+                    style={[styles.compensationCode, compensationUsed && styles.compensationCodeUsed]}
+                  >
+                    {t('refundCompensationCode')}: {compensation}
+                    {compensationUsed ? ` · ${t('refundCompensationCodeUsed')}` : ''}
+                  </Text>
+                ) : null}
+                {legacyRefunded && tx.refund_reason && (
+                  <Text style={styles.refundReason}>{tx.refund_reason}</Text>
+                )}
+              </View>
             </View>
-          </View>
-        ))}
+          );
+        })}
       </ScrollView>
     );
   };
@@ -400,7 +442,50 @@ const styles = StyleSheet.create({
   machineName: { fontSize: typography.base, fontWeight: '600', color: colors.text },
   emplacementName: { fontSize: typography.sm, color: colors.textSecondary, marginTop: 2 },
   amount: { fontSize: typography.lg, fontWeight: '700', color: colors.text },
-  amountRefunded: { color: colors.success, textDecorationLine: 'line-through' },
+  amountRefunded: { color: '#059669', textDecorationLine: 'line-through' },
+  refundChipRow: { marginTop: spacing.sm },
+  refundChipApproved: {
+    alignSelf: 'flex-start',
+    overflow: 'hidden',
+    borderRadius: borderRadius.md,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    fontSize: typography.sm,
+    fontWeight: '700',
+    backgroundColor: '#D1FAE5',
+    color: '#065F46',
+  },
+  refundChipRejected: {
+    alignSelf: 'flex-start',
+    overflow: 'hidden',
+    borderRadius: borderRadius.md,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    fontSize: typography.sm,
+    fontWeight: '700',
+    backgroundColor: '#FEE2E2',
+    color: '#991B1B',
+  },
+  refundChipPending: {
+    alignSelf: 'flex-start',
+    overflow: 'hidden',
+    borderRadius: borderRadius.md,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    fontSize: typography.sm,
+    fontWeight: '700',
+    backgroundColor: '#FEF3C7',
+    color: '#B45309',
+  },
+  compensationCode: {
+    fontSize: typography.sm,
+    fontWeight: '700',
+    color: '#065F46',
+    width: '100%',
+  },
+  compensationCodeUsed: {
+    color: '#B91C1C',
+  },
   cardFooter: { marginTop: spacing.sm, flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   date: { fontSize: typography.xs, color: colors.textMuted },
   promo: { fontSize: typography.xs, color: colors.primary, fontWeight: '600' },

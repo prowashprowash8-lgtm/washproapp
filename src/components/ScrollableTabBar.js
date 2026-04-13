@@ -2,7 +2,8 @@ import React, { useRef, useEffect } from 'react';
 import { View, ScrollView, TouchableOpacity, StyleSheet, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-const TAB_WIDTH = 76;
+/** Largeur un peu supérieure pour ne pas couper le badge (Activité) */
+const TAB_WIDTH = 86;
 const TAB_PADDING_H = 8;
 
 export default function ScrollableTabBar({ state, descriptors, navigation }) {
@@ -100,5 +101,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 8,
+    overflow: 'visible',
   },
 });

@@ -122,3 +122,26 @@ export async function getUserTransactions(userId) {
 
   return { data: data || [], error };
 }
+
+/**
+ * Nombre de réponses aux demandes de remboursement non consultées (badge onglet Activité).
+ */
+export async function countUnseenRefundResponses(userId) {
+  if (!supabase || !userId) return { count: 0, error: null };
+  const { data, error } = await supabase.rpc('count_unseen_refund_responses', {
+    p_user_id: userId,
+  });
+  // PostgREST peut renvoyer un bigint comme chaîne
+  const n = data == null ? 0 : Number(data);
+  const count = Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+  return { count, error };
+}
+
+/**
+ * Marque les réponses comme vues (ex. à l’ouverture de Mes transactions).
+ */
+export async function markRefundResponsesSeen(userId) {
+  if (!supabase || !userId) return { error: null };
+  const { error } = await supabase.rpc('mark_refund_responses_seen', { p_user_id: userId });
+  return { error };
+}

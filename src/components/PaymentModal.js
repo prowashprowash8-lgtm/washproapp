@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   StyleSheet,
@@ -31,11 +31,14 @@ export default function PaymentModal({
   priceCentimes = 0,
   onPayWithWallet,
   onGoToWallet,
+  /** Codes issus des remboursements acceptés ({ code, uses_remaining }) */
+  availablePromoCodes = [],
 }) {
   const { t } = useLanguage();
   const [promoCode, setPromoCode] = useState('');
   const [promoLoading, setPromoLoading] = useState(false);
   const [promoError, setPromoError] = useState(null);
+  const [showMyCodes, setShowMyCodes] = useState(false);
   const [cardLoading, setCardLoading] = useState(false);
   const [cardError, setCardError] = useState(null);
   const [walletLoading, setWalletLoading] = useState(false);
@@ -47,6 +50,14 @@ export default function PaymentModal({
   const walletEnough =
     showWallet && walletBalanceCentimes != null && walletBalanceCentimes >= priceCentimes;
 
+  useEffect(() => {
+    if (!visible) {
+      setShowMyCodes(false);
+      setPromoCode('');
+      setPromoError(null);
+    }
+  }, [visible]);
+
   const handleApplyPromo = async () => {
     const code = promoCode.trim();
     if (!code) return;
@@ -55,6 +66,25 @@ export default function PaymentModal({
     setPromoError(null);
     try {
       await onPayWithPromo(code);
+    } catch (err) {
+      if (err?.message === 'MACHINE_OFFLINE' || err?.code === 'MACHINE_OFFLINE') {
+        onMachineOffline?.();
+      } else {
+        setPromoError(err?.message || t('invalidCode'));
+      }
+    } finally {
+      setPromoLoading(false);
+    }
+  };
+
+  const handleUseSavedCode = async (code) => {
+    const c = (code || '').trim();
+    if (!c) return;
+    setPromoCode(c);
+    setPromoLoading(true);
+    setPromoError(null);
+    try {
+      await onPayWithPromo(c);
     } catch (err) {
       if (err?.message === 'MACHINE_OFFLINE' || err?.code === 'MACHINE_OFFLINE') {
         onMachineOffline?.();
@@ -183,7 +213,66 @@ export default function PaymentModal({
               ) : null}
 
               <View style={styles.promoSection}>
-                <Text style={styles.promoLabel}>{t('promoCode')}</Text>
+                <View style={styles.promoTitleRow}>
+                  <Text style={styles.promoLabel}>{t('promoCode')}</Text>
+                  {availablePromoCodes.length > 0 ? (
+                    <View style={styles.promoCountBadge} accessibilityLabel={String(availablePromoCodes.length)}>
+                      <Text style={styles.promoCountBadgeText}>
+                        {availablePromoCodes.length > 99 ? '99+' : availablePromoCodes.length}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                {availablePromoCodes.length > 0 ? (
+                  <>
+                    <TouchableOpacity
+                      style={styles.myCodesToggle}
+                      onPress={() => setShowMyCodes((v) => !v)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.myCodesToggleText}>
+                        {showMyCodes ? t('hideMyPromoCodes') : t('showMyPromoCodes')}
+                      </Text>
+                      <MaterialCommunityIcons
+                        name={showMyCodes ? 'chevron-up' : 'chevron-down'}
+                        size={22}
+                        color={colors.primary}
+                      />
+                    </TouchableOpacity>
+                    {showMyCodes ? (
+                      <View style={styles.savedCodesList}>
+                        {availablePromoCodes.map((row) => {
+                          const kind = (row.applies_to || 'both').toLowerCase();
+                          const kindLabel =
+                            kind === 'sechage'
+                              ? t('promoCodeMachineDryer')
+                              : kind === 'lavage'
+                                ? t('promoCodeMachineWasher')
+                                : t('promoCodeMachineBoth');
+                          return (
+                            <View key={row.code} style={styles.savedCodeRow}>
+                              <View style={styles.savedCodeLeft}>
+                                <Text style={styles.savedCodeText} selectable>
+                                  {row.code}
+                                </Text>
+                                <Text style={styles.savedCodeKind}>{kindLabel}</Text>
+                              </View>
+                              <TouchableOpacity
+                                style={[styles.useCodeBtn, promoLoading && styles.optionDisabled]}
+                                onPress={() => handleUseSavedCode(row.code)}
+                                disabled={promoLoading}
+                              >
+                                <Text style={styles.useCodeBtnText}>{t('useThisPromoCode')}</Text>
+                              </TouchableOpacity>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    ) : null}
+                  </>
+                ) : null}
+
                 <View style={styles.promoRow}>
                   <TextInput
                     style={styles.promoInput}
@@ -326,11 +415,90 @@ const styles = StyleSheet.create({
   promoSection: {
     marginTop: spacing.sm,
   },
+  promoTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
+  },
   promoLabel: {
     fontSize: typography.sm,
     fontWeight: typography.semibold,
     color: colors.text,
+  },
+  promoCountBadge: {
+    minWidth: 22,
+    height: 22,
+    paddingHorizontal: 6,
+    borderRadius: 11,
+    backgroundColor: '#EF4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  promoCountBadgeText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  myCodesToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.sm,
     marginBottom: spacing.sm,
+    backgroundColor: colors.background,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.primary + '55',
+  },
+  myCodesToggleText: {
+    flex: 1,
+    fontSize: typography.sm,
+    fontWeight: typography.semibold,
+    color: colors.primary,
+  },
+  savedCodesList: {
+    marginBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  savedCodeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+    backgroundColor: colors.background,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  savedCodeLeft: {
+    flex: 1,
+    minWidth: 0,
+  },
+  savedCodeText: {
+    fontSize: typography.base,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  savedCodeKind: {
+    fontSize: typography.xs,
+    color: colors.textSecondary,
+    marginTop: 4,
+    fontWeight: '600',
+  },
+  useCodeBtn: {
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.md,
+    borderRadius: borderRadius.md,
+    backgroundColor: colors.primary,
+  },
+  useCodeBtnText: {
+    fontSize: typography.sm,
+    fontWeight: typography.semibold,
+    color: '#fff',
   },
   promoRow: {
     flexDirection: 'row',

@@ -43,3 +43,17 @@ export async function validateAndUsePromoCode(code, machineId) {
     return { ok: false, reason: 'invalid' };
   }
 }
+
+/**
+ * Codes promo liés aux remboursements acceptés, encore utilisables (côté utilisateur connecté).
+ * @returns {Promise<{ data: Array<{ code: string, uses_remaining: number }>, error: Error | null }>}
+ */
+export async function getUserAvailablePromoCodes(userId) {
+  if (!supabase || !userId) {
+    return { data: [], error: null };
+  }
+  const { data, error } = await supabase.rpc('get_user_available_promo_codes', {
+    p_user_id: userId,
+  });
+  return { data: data || [], error };
+}

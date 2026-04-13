@@ -22,7 +22,7 @@ import { useLanguage } from '../context/LanguageContext';
 import { useLaundryTimer } from '../context/LaundryTimerContext';
 import { createTransactionAndStartMachine, createTransactionAndPayWithWallet } from '../services/transactionService';
 import { getWalletBalance } from '../services/walletService';
-import { validateAndUsePromoCode } from '../services/promoService';
+import { validateAndUsePromoCode, getUserAvailablePromoCodes } from '../services/promoService';
 import { getMachinesByEmplacement, setMachineAvailableById } from '../services/laundryService';
 import { checkEsp32Online, getEsp32IdForMachine } from '../services/esp32Service';
 import { createCheckoutAndPay } from '../services/stripeService';
@@ -32,6 +32,9 @@ import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
 // TEST : masquer une ou plusieurs machines (UUID). Liste vide = rien a masquer.
 const TEMP_HIDDEN_MACHINE_IDS = [];
+
+/** Après paiement, l’ESP peut encore signaler « machine à l’arrêt » → la RPC optocoupleur repasse la ligne en disponible avant le lancement réel. On garde l’affichage « occupé » un court instant (indépendant du minuteur). */
+const POST_PAYMENT_OCCUPE_HOLD_MS = 3 * 60 * 1000;
 
 const STATUS_COLORS = {
   disponible: colors.success,
@@ -80,8 +83,48 @@ export default function LaundryDetailScreen({ route, navigation }) {
   const [walletBalanceCentimes, setWalletBalanceCentimes] = useState(null);
   const [durationModalVisible, setDurationModalVisible] = useState(false);
   const [durationSubmitBusy, setDurationSubmitBusy] = useState(false);
+  const [availablePromoCodes, setAvailablePromoCodes] = useState([]);
   const pendingTimerMachineLabelRef = useRef(null);
   const blockPollingUntil = useRef(0); // timestamp jusqu'auquel on bloque le polling
+  const postPaymentHoldMachineIdRef = useRef(null);
+  const postPaymentHoldUntilRef = useRef(0);
+
+  const clearPostPaymentOccupeHold = useCallback(() => {
+    postPaymentHoldMachineIdRef.current = null;
+    postPaymentHoldUntilRef.current = 0;
+  }, []);
+
+  const beginPostPaymentOccupeHold = useCallback((machineId) => {
+    if (!machineId) return;
+    postPaymentHoldMachineIdRef.current = machineId;
+    postPaymentHoldUntilRef.current = Date.now() + POST_PAYMENT_OCCUPE_HOLD_MS;
+  }, []);
+
+  const mergeMachinesWithPostPaymentHold = useCallback(
+    (data) => {
+      if (!data?.length) return data;
+      const id = postPaymentHoldMachineIdRef.current;
+      const until = postPaymentHoldUntilRef.current;
+      if (!id || !until) return data;
+      if (Date.now() > until) {
+        clearPostPaymentOccupeHold();
+        return data;
+      }
+      const row = data.find((m) => m.id === id);
+      if (row && isStatutOccupe(row.statut)) {
+        clearPostPaymentOccupeHold();
+        return data;
+      }
+      return data.map((m) => {
+        if (m.id !== id) return m;
+        if (isStatutDisponible(m.statut)) {
+          return { ...m, statut: 'occupe', estimated_end_time: null };
+        }
+        return m;
+      });
+    },
+    [clearPostPaymentOccupeHold]
+  );
 
   const refreshMachines = useCallback(() => {
     if (!emplacement?.id) return Promise.resolve();
@@ -89,9 +132,11 @@ export default function LaundryDetailScreen({ route, navigation }) {
     return getMachinesByEmplacement(emplacement.id).then(({ data }) => {
       // Double vérification : une requête lancée AVANT le blocage peut revenir APRÈS
       // Sans ce check, elle écraserait le statut 'occupe' mis localement au moment du paiement
-      if (data && Date.now() >= blockPollingUntil.current) setMachines(data);
+      if (data && Date.now() >= blockPollingUntil.current) {
+        setMachines(mergeMachinesWithPostPaymentHold(data));
+      }
     });
-  }, [emplacement?.id]);
+  }, [emplacement?.id, mergeMachinesWithPostPaymentHold]);
 
   const refreshWalletBalance = useCallback(() => {
     if (!user?.id || !isSupabaseConfigured()) {
@@ -123,6 +168,20 @@ export default function LaundryDetailScreen({ route, navigation }) {
     let cancelled = false;
     getWalletBalance(user.id).then(({ balanceCentimes }) => {
       if (!cancelled) setWalletBalanceCentimes(balanceCentimes);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [paymentModalVisible, user?.id]);
+
+  useEffect(() => {
+    if (!paymentModalVisible || !user?.id || !isSupabaseConfigured()) {
+      setAvailablePromoCodes([]);
+      return;
+    }
+    let cancelled = false;
+    getUserAvailablePromoCodes(user.id).then(({ data }) => {
+      if (!cancelled) setAvailablePromoCodes(Array.isArray(data) ? data : []);
     });
     return () => {
       cancelled = true;
@@ -371,6 +430,7 @@ export default function LaundryDetailScreen({ route, navigation }) {
 
     if (!success) {
       blockPollingUntil.current = 0;
+      clearPostPaymentOccupeHold();
       setMachines((prev) =>
         prev.map((m) => (m.id === machineId ? { ...m, statut: 'disponible' } : m))
       );
@@ -380,6 +440,7 @@ export default function LaundryDetailScreen({ route, navigation }) {
       throw new Error(error || t('startError'));
     }
 
+    beginPostPaymentOccupeHold(machineId);
     setPaymentModalVisible(false);
     refreshWalletBalance();
     const machineLabel = selectedMachineFromList?.name || selectedMachineFromList?.nom || t('machine');
@@ -401,6 +462,7 @@ export default function LaundryDetailScreen({ route, navigation }) {
     try {
       const machineLabel = pendingTimerMachineLabelRef.current || t('machine');
       await startTimer({ machineName: machineLabel, durationMinutes: minutes });
+      clearPostPaymentOccupeHold();
       setDurationModalVisible(false);
       pendingTimerMachineLabelRef.current = null;
       navigation.dispatch(CommonActions.navigate({ name: 'Activité' }));
@@ -467,9 +529,11 @@ export default function LaundryDetailScreen({ route, navigation }) {
 
     if (!success) {
       blockPollingUntil.current = 0; // libérer le bloc si erreur
+      clearPostPaymentOccupeHold();
       throw new Error(error || t('startError'));
     }
 
+    beginPostPaymentOccupeHold(machineId);
     setPaymentModalVisible(false);
     const machineLabel = selectedMachineFromList?.name || selectedMachineFromList?.nom || t('machine');
     openDurationModalAfterPayment(machineLabel);
@@ -648,6 +712,7 @@ export default function LaundryDetailScreen({ route, navigation }) {
         onGoToWallet={goToWallet}
         onPayByCard={handlePayByCard}
         onPayWithPromo={handlePayWithPromo}
+        availablePromoCodes={availablePromoCodes}
       />
 
       <DurationModal
