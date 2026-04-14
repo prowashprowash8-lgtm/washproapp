@@ -33,8 +33,13 @@ import { supabase, isSupabaseConfigured } from '../lib/supabase';
 // TEST : masquer une ou plusieurs machines (UUID). Liste vide = rien a masquer.
 const TEMP_HIDDEN_MACHINE_IDS = [];
 
-/** Après paiement, l’ESP peut encore signaler « machine à l’arrêt » → la RPC optocoupleur repasse la ligne en disponible avant le lancement réel. On garde l’affichage « occupé » un court instant (indépendant du minuteur). */
-const POST_PAYMENT_OCCUPE_HOLD_MS = 3 * 60 * 1000;
+/** Après paiement, l’ESP peut encore signaler « machine à l’arrêt » juste avant le vrai démarrage.
+ * On masque un faux « disponible » seulement les premières secondes (voir POST_PAYMENT_MASK_DISPO_MS).
+ * Passé ce délai, si Supabase indique déjà « disponible » (ex. arrêt / opto), on l’affiche — ne pas
+ * forcer « occupé » jusqu’à 25 s, sinon l’app ne reflète jamais un arrêt rapide.
+ */
+const POST_PAYMENT_OCCUPE_HOLD_MS = 25 * 1000;
+const POST_PAYMENT_MASK_DISPO_MS = 5000;
 
 const STATUS_COLORS = {
   disponible: colors.success,
@@ -88,16 +93,19 @@ export default function LaundryDetailScreen({ route, navigation }) {
   const blockPollingUntil = useRef(0); // timestamp jusqu'auquel on bloque le polling
   const postPaymentHoldMachineIdRef = useRef(null);
   const postPaymentHoldUntilRef = useRef(0);
+  const postPaymentHoldStartedAtRef = useRef(0);
 
   const clearPostPaymentOccupeHold = useCallback(() => {
     postPaymentHoldMachineIdRef.current = null;
     postPaymentHoldUntilRef.current = 0;
+    postPaymentHoldStartedAtRef.current = 0;
   }, []);
 
   const beginPostPaymentOccupeHold = useCallback((machineId) => {
     if (!machineId) return;
     postPaymentHoldMachineIdRef.current = machineId;
     postPaymentHoldUntilRef.current = Date.now() + POST_PAYMENT_OCCUPE_HOLD_MS;
+    postPaymentHoldStartedAtRef.current = Date.now();
   }, []);
 
   const mergeMachinesWithPostPaymentHold = useCallback(
@@ -111,9 +119,18 @@ export default function LaundryDetailScreen({ route, navigation }) {
         return data;
       }
       const row = data.find((m) => m.id === id);
-      if (row && isStatutOccupe(row.statut)) {
+      if (!row) return data;
+      if (isStatutOccupe(row.statut)) {
         clearPostPaymentOccupeHold();
         return data;
+      }
+      // Faux « disponible » tout juste après paiement : masqué seulement les premières secondes.
+      if (isStatutDisponible(row.statut)) {
+        const age = Date.now() - (postPaymentHoldStartedAtRef.current || 0);
+        if (age >= POST_PAYMENT_MASK_DISPO_MS) {
+          clearPostPaymentOccupeHold();
+          return data;
+        }
       }
       return data.map((m) => {
         if (m.id !== id) return m;

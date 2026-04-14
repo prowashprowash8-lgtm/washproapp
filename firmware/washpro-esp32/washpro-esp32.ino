@@ -1,16 +1,21 @@
 /**
- * WashPro ESP32 — stable
+ * WashPro ESP32 — firmware de référence
  *
- * IMPORTANT côté Supabase : si PATCH "done" échoue (HTTP 401), exécute
- *   supabase/machine-commands-rls-fix.sql
- * Sinon l'ESP ne peut pas acquitter les commandes (file bloquée).
+ * - Heartbeat → register_esp32_heartbeat
+ * - Commande payée → claim_pending_start_command puis impulsion relais (broche 2.3 « impulsion payée » côté machine)
+ * - Optocoupleur → report_machine_run_state (p_running) + secours set_machine_available_by_esp_relay à l’arrêt
+ *
+ * Supabase : déployer esp32-optocoupler-machine-state-auto-fix.sql + machine-commands-claim-start.sql
  */
 
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <ArduinoJson.h>
 
-const char* WIFI_SSID     = "link";
+// ---------------------------------------------------------------------------
+// CONFIG — à adapter
+// ---------------------------------------------------------------------------
+
+const char* WIFI_SSID = "link";
 const char* WIFI_PASSWORD = "123456789";
 
 const char* SUPABASE_URL = "https://ftechtqyocgdabfkmclm.supabase.co";
@@ -19,46 +24,63 @@ const char* SUPABASE_ANON =
 
 const char* ESP32_ID = "WASH_PRO_001";
 const int MACHINE_RELAY_ID = 1;
+
+/** Optionnel : UUID Supabase de la ligne machines (32+ car.) pour PATCH / RPC secours si besoin */
 const char* MACHINE_TABLE_UUID = "";
 
-const int RELAIS_PIN = 4;
-const int OPTO_PIN = 5;
+const int PIN_RELAY = 4;
+const int PIN_OPTO = 5;
+
+/** Relais : true = actif niveau HIGH, false = actif LOW.
+ * Observation matérielle validée : en false, le relais clique au boot.
+ * On garde donc true pour que le relais reste au repos au démarrage.
+ */
+const bool RELAY_ACTIVE_HIGH = true;
+
+/** Opto : true = HIGH = machine en marche ; false = LOW = en marche */
 const bool OPTO_HIGH_MEANS_RUNNING = false;
 
-unsigned long lastHeartbeatMs = 0;
-const unsigned long HEARTBEAT_INTERVAL_MS = 5000;
-unsigned long lastMachineStateMs = 0;
-const unsigned long MACHINE_STATE_BACKUP_RUNNING_MS = 30000;
-unsigned long lastStoppedResendMs = 0;
-const unsigned long RESEND_STOPPED_MS = 2000;
-unsigned long lastStartOrderMs = 0;
-// On n'applique plus de grâce fixe après START : si l'utilisateur annule vite,
-// la machine doit pouvoir repasser disponible immédiatement.
-const unsigned long GRACE_AFTER_START_MS = 0;
-unsigned long lastDebugMs = 0;
+const unsigned long HEARTBEAT_MS = 5000;
+const unsigned long RELAY_PULSE_MS = 5000;
+/** Ne pas appeler claim_pending_start_command avant ce délai (sinon la RPC marque done sans relais). */
+const unsigned long BOOT_GRACE_MS = 12000;
+/** Anti-rebond arrêt : échantillons « arrêt » consécutifs avant de croire l’arrêt */
+const uint8_t OPTO_STOP_COUNT = 10;
+const unsigned long RESEND_STOPPED_MS = 2500;
+const unsigned long BACKUP_RUNNING_MS = 30000;
+const unsigned long WIFI_RECONNECT_TIMEOUT_MS = 20000;
 
-bool lastFilteredRunning = false;
-bool lastSentRunning = false;
-bool runningSeenAfterStart = false;
-uint8_t optoStopStreak = 0;
-const uint8_t OPTO_STOP_STREAK_MIN = 12;
+// ---------------------------------------------------------------------------
+// État
+// ---------------------------------------------------------------------------
 
-/** Dernière commande pour laquelle on a déjà fait l'impulsion relais (évite double pulse si PATCH échoue). */
-String lastPulsedCommandId;
+unsigned long msBoot = 0;
+unsigned long msLastHb = 0;
+unsigned long msLastMachineState = 0;
+unsigned long msLastStoppedResend = 0;
+unsigned long msLastDebug = 0;
 
-void headersHttp(HTTPClient& http) {
+bool filteredRunning = false;
+bool sentRunning = false;
+uint8_t stopStreak = 0;
+
+// ---------------------------------------------------------------------------
+// HTTP
+// ---------------------------------------------------------------------------
+
+void addHeaders(HTTPClient& http) {
   http.addHeader("apikey", SUPABASE_ANON);
   http.addHeader("Authorization", "Bearer " + String(SUPABASE_ANON));
   http.addHeader("Content-Type", "application/json");
 }
 
-void sendHeartbeat() {
-  HTTPClient hb;
-  hb.begin(String(SUPABASE_URL) + "/rest/v1/rpc/register_esp32_heartbeat");
-  hb.setTimeout(10000);
-  headersHttp(hb);
-  hb.POST("{\"p_esp32_id\":\"" + String(ESP32_ID) + "\"}");
-  hb.end();
+void postHeartbeat() {
+  HTTPClient http;
+  http.begin(String(SUPABASE_URL) + "/rest/v1/rpc/register_esp32_heartbeat");
+  http.setTimeout(10000);
+  addHeaders(http);
+  http.POST("{\"p_esp32_id\":\"" + String(ESP32_ID) + "\"}");
+  http.end();
 }
 
 void patchMachineDisponibleByUuid() {
@@ -66,216 +88,224 @@ void patchMachineDisponibleByUuid() {
   HTTPClient http;
   http.begin(String(SUPABASE_URL) + "/rest/v1/machines?id=eq." + String(MACHINE_TABLE_UUID));
   http.setTimeout(8000);
-  headersHttp(http);
+  addHeaders(http);
   http.addHeader("Prefer", "return=minimal");
   http.PATCH("{\"statut\":\"disponible\",\"estimated_end_time\":null}");
   http.end();
 }
 
-bool setMachineDisponibleByIdRpc() {
+bool rpcSetAvailableById() {
   if (MACHINE_TABLE_UUID == nullptr || strlen(MACHINE_TABLE_UUID) < 32) return false;
   HTTPClient http;
   http.begin(String(SUPABASE_URL) + "/rest/v1/rpc/set_machine_available_by_id");
   http.setTimeout(8000);
-  headersHttp(http);
+  addHeaders(http);
   int code = http.POST("{\"p_machine_id\":\"" + String(MACHINE_TABLE_UUID) + "\"}");
-  String resp = http.getString();
-  Serial.printf("[WashPro] set_machine_available_by_id HTTP %d %s\n", code, resp.c_str());
+  http.getString();
   http.end();
   return code >= 200 && code < 300;
 }
 
-void sendMachineRunState(bool running) {
+bool rpcSetAvailableByEspRelay() {
+  HTTPClient http;
+  http.begin(String(SUPABASE_URL) + "/rest/v1/rpc/set_machine_available_by_esp_relay");
+  http.setTimeout(8000);
+  addHeaders(http);
+  String body = "{\"p_esp32_id\":\"" + String(ESP32_ID) + "\",\"p_relay_id\":" + String(MACHINE_RELAY_ID) + "}";
+  int code = http.POST(body);
+  http.getString();
+  http.end();
+  return code >= 200 && code < 300;
+}
+
+void reportRunState(bool running) {
   HTTPClient http;
   http.begin(String(SUPABASE_URL) + "/rest/v1/rpc/report_machine_run_state");
   http.setTimeout(8000);
-  headersHttp(http);
+  addHeaders(http);
   String body = "{\"p_esp32_id\":\"" + String(ESP32_ID) + "\",\"p_relay_id\":" + String(MACHINE_RELAY_ID) +
                 ",\"p_running\":" + String(running ? "true" : "false") + "}";
   int code = http.POST(body);
   String resp = http.getString();
   resp.trim();
   int rows = resp.toInt();
-  Serial.printf("[WashPro] report_machine_run_state HTTP %d p_running=%s | lignes=%d\n",
-                code, running ? "true" : "false", rows);
+  Serial.printf("[WashPro] report_machine_run_state HTTP %d running=%s rows=%d\n", code, running ? "1" : "0", rows);
   http.end();
+
   if (!running) {
-    // Toujours forcer un fallback explicite au STOP pour garantir le retour "disponible"
-    // même si le mapping report_machine_run_state ne match pas.
-    bool ok = setMachineDisponibleByIdRpc();
-    if (!ok && (code != 200 || rows == 0)) patchMachineDisponibleByUuid();
+    if (!rpcSetAvailableByEspRelay()) {
+      if (!rpcSetAvailableById() && (code != 200 || rows == 0)) patchMachineDisponibleByUuid();
+    }
   }
 }
 
-bool inGraceAfterStart() {
-  return lastStartOrderMs > 0 && (millis() - lastStartOrderMs) < GRACE_AFTER_START_MS;
-}
-
-void sendMachineRunStateFiltered(bool running) {
-  // Le filtrage de l'opto + hystérésis suffit; on n'ignore plus les STOP précoces.
-  sendMachineRunState(running);
-}
-
-bool updateCommandStatus(const char* id) {
+bool claimStartCommand(String& outUuid) {
+  outUuid = "";
   HTTPClient http;
-  http.begin(String(SUPABASE_URL) + "/rest/v1/machine_commands?id=eq." + String(id) + "&status=eq.pending");
+  http.begin(String(SUPABASE_URL) + "/rest/v1/rpc/claim_pending_start_command");
   http.setTimeout(8000);
-  headersHttp(http);
-  http.addHeader("Prefer", "return=representation");
-  int code = http.PATCH("{\"status\":\"done\"}");
-  String resp = http.getString();
-  Serial.printf("[WashPro] PATCH done id=%s HTTP %d %s\n", id, code, resp.c_str());
-  http.end();
-  return code >= 200 && code < 300;
-}
-
-bool readOptoRunningInstant() {
-  int hi = 0;
-  for (int i = 0; i < 15; i++) {
-    bool bit = OPTO_HIGH_MEANS_RUNNING ? (digitalRead(OPTO_PIN) == HIGH) : (digitalRead(OPTO_PIN) == LOW);
-    if (bit) hi++;
-    delay(8);
-  }
-  return hi > 7;
-}
-
-bool filterRunningWithHysteresis(bool rawRunning) {
-  if (rawRunning) {
-    optoStopStreak = 0;
-    return true;
-  }
-  if (!lastFilteredRunning) {
-    optoStopStreak = 0;
-    return false;
-  }
-  optoStopStreak++;
-  return optoStopStreak >= OPTO_STOP_STREAK_MIN ? false : true;
-}
-
-bool fetchOnePendingStart(String& outId) {
-  outId = "";
-  HTTPClient http;
-  String url = String(SUPABASE_URL) +
-               "/rest/v1/machine_commands?esp32_id=eq." + String(ESP32_ID) +
-               "&status=eq.pending&command=eq.START&select=id&order=created_at.desc&limit=1";
-  http.begin(url);
-  http.setTimeout(8000);
-  headersHttp(http);
-  int code = http.GET();
+  addHeaders(http);
+  int code = http.POST("{\"p_esp32_id\":\"" + String(ESP32_ID) + "\"}");
   String payload = http.getString();
   http.end();
   if (code != 200) {
-    Serial.printf("[WashPro] GET machine_commands HTTP %d %s\n", code, payload.c_str());
+    if (code != -1) Serial.printf("[WashPro] claim HTTP %d\n", code);
     return false;
   }
-  DynamicJsonDocument doc(1024);
-  if (deserializeJson(doc, payload)) return false;
-  JsonArray arr = doc.as<JsonArray>();
-  if (arr.size() == 0) return false;
-  const char* id = arr[0]["id"];
-  if (!id) return false;
-  outId = String(id);
-  return true;
+  payload.trim();
+  if (payload == "null" || payload.length() < 6) return false;
+  if (payload.startsWith("\"") && payload.endsWith("\"") && payload.length() > 2) {
+    outUuid = payload.substring(1, payload.length() - 1);
+  } else {
+    outUuid = payload;
+  }
+  outUuid.trim();
+  return outUuid.length() >= 8;
 }
 
+// ---------------------------------------------------------------------------
+// Relais & opto
+// ---------------------------------------------------------------------------
+
+void relayIdle() {
+  digitalWrite(PIN_RELAY, RELAY_ACTIVE_HIGH ? LOW : HIGH);
+}
+
+void relayPulse() {
+  digitalWrite(PIN_RELAY, RELAY_ACTIVE_HIGH ? HIGH : LOW);
+  delay(RELAY_PULSE_MS);
+  relayIdle();
+}
+
+bool sampleOptoRaw() {
+  int hi = 0;
+  for (int i = 0; i < 12; i++) {
+    bool on = OPTO_HIGH_MEANS_RUNNING ? (digitalRead(PIN_OPTO) == HIGH) : (digitalRead(PIN_OPTO) == LOW);
+    if (on) hi++;
+    delay(6);
+  }
+  return hi > 6;
+}
+
+bool applyHysteresis(bool raw) {
+  if (raw) {
+    stopStreak = 0;
+    return true;
+  }
+  if (!filteredRunning) {
+    stopStreak = 0;
+    return false;
+  }
+  stopStreak++;
+  return stopStreak >= OPTO_STOP_COUNT ? false : true;
+}
+
+bool wifiEnsureConnected() {
+  if (WiFi.status() == WL_CONNECTED) return true;
+  Serial.println("[WiFi] reconnexion…");
+  WiFi.reconnect();
+  unsigned long t0 = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < WIFI_RECONNECT_TIMEOUT_MS) {
+    delay(400);
+    Serial.print(".");
+  }
+  Serial.println();
+  return WiFi.status() == WL_CONNECTED;
+}
+
+// ---------------------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
-  pinMode(RELAIS_PIN, OUTPUT);
-  digitalWrite(RELAIS_PIN, LOW);
-  pinMode(OPTO_PIN, INPUT_PULLUP);
-  Serial.print("WiFi...");
+  delay(200);
+  msBoot = millis();
+
+  // Mettre la sortie relais au repos immédiatement pour éviter un clic parasite au boot.
+  pinMode(PIN_RELAY, OUTPUT);
+  relayIdle();
+  delay(50);
+  pinMode(PIN_OPTO, INPUT_PULLUP);
+
+  WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("WiFi");
   while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+    delay(400);
     Serial.print(".");
   }
   Serial.println(" OK");
-  sendHeartbeat();
-  lastHeartbeatMs = millis();
-  optoStopStreak = 0;
-  bool raw = readOptoRunningInstant();
-  lastFilteredRunning = filterRunningWithHysteresis(raw);
-  lastSentRunning = lastFilteredRunning;
-  sendMachineRunState(lastSentRunning);
-  lastMachineStateMs = millis();
-  lastStoppedResendMs = millis();
-  Serial.println("WashPro OK — si PATCH done = 401, exécute machine-commands-rls-fix.sql sur Supabase.");
+
+  postHeartbeat();
+  msLastHb = millis();
+
+  stopStreak = 0;
+  bool raw = sampleOptoRaw();
+  filteredRunning = applyHysteresis(raw);
+  sentRunning = filteredRunning;
+  reportRunState(sentRunning);
+  msLastMachineState = msLastStoppedResend = millis();
+
+  Serial.println("[WashPro] prêt.");
 }
 
 void loop() {
-  if (millis() - lastHeartbeatMs >= HEARTBEAT_INTERVAL_MS) {
-    sendHeartbeat();
-    lastHeartbeatMs = millis();
+  unsigned long now = millis();
+
+  if (now - msLastHb >= HEARTBEAT_MS) {
+    if (wifiEnsureConnected()) postHeartbeat();
+    msLastHb = millis();
   }
 
-  bool skipOpto = false;
-
-  if (WiFi.status() == WL_CONNECTED) {
-    String cmdId;
-    if (fetchOnePendingStart(cmdId) && cmdId.length() > 0) {
-      bool needPulse = (cmdId != lastPulsedCommandId);
-      if (needPulse) {
-        lastStartOrderMs = millis();
-        runningSeenAfterStart = false;
-        Serial.println(">>> START (paiement app) — relais <<<");
-        digitalWrite(RELAIS_PIN, HIGH);
-        delay(5000);
-        digitalWrite(RELAIS_PIN, LOW);
-        lastPulsedCommandId = cmdId;
-      } else {
-        Serial.println("[WashPro] même commande — pas de 2e relais, tentative PATCH done seulement");
-      }
-
-      if (updateCommandStatus(cmdId.c_str())) {
-        lastPulsedCommandId = "";
-        Serial.println("[WashPro] Commande acquittée.");
-      } else {
-        Serial.println("[WashPro] PATCH échoué — vérifie RLS (machine-commands-rls-fix.sql)");
-      }
-
-      optoStopStreak = 0;
-      bool rawAfter = readOptoRunningInstant();
-      lastFilteredRunning = filterRunningWithHysteresis(rawAfter);
-      if (lastFilteredRunning) runningSeenAfterStart = true;
-      lastSentRunning = lastFilteredRunning;
-      if (lastFilteredRunning) sendMachineRunState(true);
-      lastStoppedResendMs = millis();
-      lastMachineStateMs = millis();
-      skipOpto = true;
-    }
-  }
-
-  if (skipOpto) {
-    delay(80);
+  if (!wifiEnsureConnected()) {
+    delay(300);
     return;
   }
 
-  bool rawRunning = readOptoRunningInstant();
-  bool running = filterRunningWithHysteresis(rawRunning);
-  lastFilteredRunning = running;
+  // Un seul échantillonnage opto / hystérésis par tour de boucle
+  bool raw = sampleOptoRaw();
+  bool running = applyHysteresis(raw);
+  filteredRunning = running;
 
-  if (running != lastSentRunning) {
-    Serial.println(running ? "[Opto] MARCHE" : "[Opto] ARRÊT");
-    if (running) runningSeenAfterStart = true;
-    sendMachineRunStateFiltered(running);
-    lastSentRunning = running;
-    lastMachineStateMs = millis();
-    lastStoppedResendMs = millis();
-  }
+  // --- Commande START (paiement déjà validé côté serveur) ---
+  // Ne pas bloquer le claim sur l'hystérésis opto : si elle reste à « marche » à tort,
+  // la ligne resterait pending. Après un claim réussi, on pulse toujours (paiement = autorisation).
+  if (now - msBoot >= BOOT_GRACE_MS) {
+    String cmd;
+    if (claimStartCommand(cmd)) {
+      Serial.println("[WashPro] START — impulsion relais");
+      relayPulse();
 
-  if (!running) {
-    if (!inGraceAfterStart() && millis() - lastStoppedResendMs >= RESEND_STOPPED_MS) {
-      sendMachineRunStateFiltered(false);
-      lastStoppedResendMs = millis();
+      stopStreak = 0;
+      raw = sampleOptoRaw();
+      running = applyHysteresis(raw);
+      filteredRunning = running;
+      sentRunning = running;
+      if (running) reportRunState(true);
+      msLastMachineState = msLastStoppedResend = millis();
+      delay(50);
+      return;
     }
-  } else if (millis() - lastMachineStateMs >= MACHINE_STATE_BACKUP_RUNNING_MS) {
-    sendMachineRunState(true);
-    lastMachineStateMs = millis();
   }
 
-  if (millis() - lastDebugMs >= 4000) {
-    lastDebugMs = millis();
-    Serial.printf("[Opto] brut=%d filt=%d\n", digitalRead(OPTO_PIN), (int)running);
+  // --- Suivi opto continu ---
+
+  if (running != sentRunning) {
+    Serial.println(running ? "[Opto] MARCHE" : "[Opto] ARRÊT");
+    reportRunState(running);
+    sentRunning = running;
+    msLastMachineState = msLastStoppedResend = millis();
+  } else if (!running) {
+    if (now - msLastStoppedResend >= RESEND_STOPPED_MS) {
+      reportRunState(false);
+      msLastStoppedResend = millis();
+    }
+  } else if (now - msLastMachineState >= BACKUP_RUNNING_MS) {
+    reportRunState(true);
+    msLastMachineState = millis();
+  }
+
+  if (now - msLastDebug >= 5000) {
+    msLastDebug = millis();
+    Serial.printf("[Opto] pin=%d running~=%d\n", digitalRead(PIN_OPTO), running ? 1 : 0);
   }
 
   delay(80);
