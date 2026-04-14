@@ -46,6 +46,71 @@ async function getSessionWithMergedMetadata(sessionId: string): Promise<{
   return { session, meta };
 }
 
+/**
+ * Remboursement : retrouver l’utilisateur portefeuille à débiter (même logique que la recharge, avec repli).
+ * Sans cela, refund.created renvoie souvent « ignored » si le PI n’a pas les meta en mémoire ou si la ligne
+ * recharge n’a pas stripe_payment_intent_id (anciennes sessions / idempotence).
+ */
+async function resolveWalletUserIdForRefund(
+  supabase: ReturnType<typeof createClient>,
+  paymentIntent: Stripe.PaymentIntent,
+): Promise<string> {
+  const piMeta = paymentIntent.metadata || {};
+  if (String(piMeta.checkout_kind || '').trim() === 'wallet_recharge') {
+    const u = String(piMeta.user_id || '').trim();
+    if (u.length >= 10) return u;
+  }
+
+  const { data: wtPi } = await supabase
+    .from('wallet_transactions')
+    .select('user_id')
+    .eq('type', 'recharge')
+    .eq('stripe_payment_intent_id', paymentIntent.id)
+    .maybeSingle();
+  let uid = wtPi && typeof wtPi === 'object' && 'user_id' in wtPi
+    ? String((wtPi as { user_id: string }).user_id || '')
+    : '';
+  if (uid.length >= 10) return uid;
+
+  // Session Checkout liée à ce PI (souvent présent même quand le PI seul a des meta incomplètes)
+  let sessionList;
+  try {
+    sessionList = await stripe.checkout.sessions.list({
+      payment_intent: paymentIntent.id,
+      limit: 5,
+    });
+  } catch (e) {
+    console.error('checkout.sessions.list (refund):', e);
+    return '';
+  }
+
+  for (const cs of sessionList.data) {
+    if (!cs?.id) continue;
+    try {
+      const { meta: merged } = await getSessionWithMergedMetadata(cs.id);
+      if (String(merged.checkout_kind || '').trim() === 'wallet_recharge') {
+        const u = String(merged.user_id || '').trim();
+        if (u.length >= 10) return u;
+      }
+    } catch (e) {
+      console.error('getSessionWithMergedMetadata (refund):', cs.id, e);
+    }
+
+    const { data: wtCs } = await supabase
+      .from('wallet_transactions')
+      .select('user_id')
+      .eq('type', 'recharge')
+      .eq('stripe_session_id', cs.id)
+      .maybeSingle();
+    uid = wtCs && typeof wtCs === 'object' && 'user_id' in wtCs
+      ? String((wtCs as { user_id: string }).user_id || '')
+      : '';
+    if (uid.length >= 10) return uid;
+  }
+
+  return '';
+}
+
 Deno.serve(async (req) => {
   const signature = req.headers.get('Stripe-Signature');
   const body = await req.text();
@@ -234,25 +299,7 @@ Deno.serve(async (req) => {
         });
       }
 
-      const meta = paymentIntent.metadata || {};
-      let userIdToDebit = '';
-      if (String(meta.checkout_kind || '').trim() === 'wallet_recharge') {
-        const u = String(meta.user_id || '').trim();
-        if (u.length >= 10) userIdToDebit = u;
-      }
-      // Repli : beaucoup de sessions Checkout n’exposent pas checkout_kind/user_id sur le PaymentIntent
-      if (!userIdToDebit) {
-        const { data: wtRow } = await supabase
-          .from('wallet_transactions')
-          .select('user_id')
-          .eq('type', 'recharge')
-          .eq('stripe_payment_intent_id', paymentIntent.id)
-          .maybeSingle();
-        const uid = wtRow && typeof wtRow === 'object' && 'user_id' in wtRow
-          ? String((wtRow as { user_id: string }).user_id || '')
-          : '';
-        if (uid.length >= 10) userIdToDebit = uid;
-      }
+      const userIdToDebit = await resolveWalletUserIdForRefund(supabase, paymentIntent);
       if (!userIdToDebit) {
         return new Response(JSON.stringify({ received: true, ignored: 'refund_not_wallet' }), {
           headers: { 'Content-Type': 'application/json' },

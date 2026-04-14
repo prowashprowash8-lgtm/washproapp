@@ -21,6 +21,7 @@ import { useLanguage } from '../context/LanguageContext';
 import { useRefundActivityBadge } from '../context/RefundActivityBadgeContext';
 import { useLaundryTimer } from '../context/LaundryTimerContext';
 import { getUserTransactions } from '../services/transactionService';
+import { getWalletActivity } from '../services/walletService';
 import { colors, spacing, typography, borderRadius } from '../theme/colors';
 
 const DATE_LOCALE_BY_APP = {
@@ -76,6 +77,7 @@ export default function TransactionScreen() {
     }, [user?.id, markAllSeen])
   );
   const [transactions, setTransactions] = useState([]);
+  const [walletActivity, setWalletActivity] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState(null);
@@ -93,9 +95,13 @@ export default function TransactionScreen() {
     if (!isRefresh) setLoading(true);
     else setRefreshing(true);
     setError(null);
-    const { data, error: err } = await getUserTransactions(user.id);
+    const [{ data, error: err }, { lines, error: walletErr }] = await Promise.all([
+      getUserTransactions(user.id),
+      getWalletActivity(user.id),
+    ]);
     setTransactions(data || []);
-    setError(err?.message || null);
+    setWalletActivity(lines || []);
+    setError(err?.message || walletErr?.message || null);
     setLoading(false);
     setRefreshing(false);
   };
@@ -144,6 +150,11 @@ export default function TransactionScreen() {
   };
 
   const renderBody = () => {
+    const mergedRows = [
+      ...(transactions || []).map((tx) => ({ kind: 'machine', created_at: tx.created_at, tx })),
+      ...(walletActivity || []).map((w) => ({ kind: 'wallet', created_at: w.created_at, wallet: w })),
+    ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
     if (loading) {
       return (
         <View style={styles.center}>
@@ -159,7 +170,7 @@ export default function TransactionScreen() {
         </View>
       );
     }
-    if (transactions.length === 0) {
+    if (mergedRows.length === 0) {
       return (
         <ScrollView
           contentContainerStyle={[styles.center, styles.emptyScroll]}
@@ -190,13 +201,51 @@ export default function TransactionScreen() {
           />
         }
       >
-        {transactions.map((tx) => {
+        {mergedRows.map((row) => {
+          if (row.kind === 'wallet') {
+            const w = row.wallet;
+            const isCredit = w.activity_kind === 'wallet_recharge';
+            const label =
+              w.activity_kind === 'wallet_recharge'
+                ? t('walletActivityRecharge')
+                : w.activity_kind === 'wallet_refund'
+                  ? t('walletActivityRefund')
+                  : w.activity_kind === 'wallet_machine_debit'
+                    ? t('walletActivityMachineDebit')
+                    : t('walletActivityOther');
+            const amountValue = Number(w.amount_centimes || 0) / 100;
+            const amountText = `${isCredit ? '+' : '-'}€ ${amountValue.toFixed(2)}`;
+            const amountColor =
+              w.activity_kind === 'wallet_refund'
+                ? colors.warning
+                : isCredit
+                  ? colors.primary
+                  : colors.text;
+            return (
+              <View key={`wallet-${w.id}`} style={styles.card}>
+                <View style={styles.cardHeader}>
+                  <View style={styles.cardLeft}>
+                    <MaterialCommunityIcons name="wallet" size={24} color={colors.primary} />
+                    <View style={styles.cardInfo}>
+                      <Text style={styles.machineLabel}>{t('walletTitle')}</Text>
+                      <Text style={styles.machineName}>{label}</Text>
+                    </View>
+                  </View>
+                  <Text style={[styles.amount, { color: amountColor }]}>{amountText}</Text>
+                </View>
+                <View style={styles.cardFooter}>
+                  <Text style={styles.date}>{formatDate(w.created_at, locale)}</Text>
+                </View>
+              </View>
+            );
+          }
+          const tx = row.tx;
           const rr = tx.refund_request_statut || null;
           const compensation = tx.refund_compensation_code || null;
           const compensationUsed = tx.refund_compensation_used === true;
           const legacyRefunded = tx.status === 'refunded';
           return (
-            <View key={tx.id} style={styles.card}>
+            <View key={`tx-${tx.id}`} style={styles.card}>
               <View style={styles.cardHeader}>
                 <View style={styles.cardLeft}>
                   <MaterialCommunityIcons
