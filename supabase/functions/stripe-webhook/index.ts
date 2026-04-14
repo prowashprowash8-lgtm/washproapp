@@ -2,7 +2,8 @@
 // - checkout.session.completed → recharge portefeuille ou paiement machine + START
 // - refund.created → débite le portefeuille si la recharge était checkout_kind=wallet_recharge
 // Déployer : supabase functions deploy stripe-webhook
-// Secrets : STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET + SUPABASE_SERVICE_ROLE_KEY
+// Secrets : STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
+// Service role : variable auto SUPABASE_SERVICE_ROLE_KEY OU secret manuel SERVICE_ROLE_KEY (préfixe SUPABASE_ interdit pour les secrets custom)
 // Stripe Dashboard → Webhooks : inclure « refund.created » (et checkout.session.completed)
 
 import Stripe from 'https://esm.sh/stripe@14?target=deno';
@@ -11,6 +12,39 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 // Pas de apiVersion figée : 2024-11-20 peut être refusée (« Invalid Stripe API version »).
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY')!);
 const cryptoProvider = Stripe.createSubtleCryptoProvider();
+
+function getServiceRoleKey(): string {
+  const auto = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  if (auto && auto.length > 20) return auto;
+  const manual = Deno.env.get('SERVICE_ROLE_KEY');
+  if (manual && manual.length > 20) return manual;
+  return '';
+}
+
+/**
+ * Le payload webhook `checkout.session.completed` est souvent minimal : les métadonnées
+ * peuvent être vides sur la Session mais présentes sur le PaymentIntent (voir create-checkout).
+ * Sans fusion, la recharge portefeuille est ignorée alors que Stripe a bien encaissé.
+ */
+async function getSessionWithMergedMetadata(sessionId: string): Promise<{
+  session: Stripe.Checkout.Session;
+  meta: Record<string, string>;
+}> {
+  const session = await stripe.checkout.sessions.retrieve(sessionId, {
+    expand: ['payment_intent'],
+  });
+  const meta: Record<string, string> = {};
+  for (const [k, v] of Object.entries(session.metadata || {})) {
+    meta[k] = String(v ?? '');
+  }
+  const pi = session.payment_intent;
+  if (pi && typeof pi === 'object' && 'metadata' in pi) {
+    for (const [k, v] of Object.entries((pi as Stripe.PaymentIntent).metadata || {})) {
+      if (!meta[k] || meta[k] === '') meta[k] = String(v ?? '');
+    }
+  }
+  return { session, meta };
+}
 
 Deno.serve(async (req) => {
   const signature = req.headers.get('Stripe-Signature');
@@ -30,8 +64,8 @@ Deno.serve(async (req) => {
   }
 
   if (event.type === 'checkout.session.completed') {
-    const session = event.data.object as Stripe.Checkout.Session;
-    const paymentStatus = String(session.payment_status || '').trim();
+    const thin = event.data.object as Stripe.Checkout.Session;
+    const paymentStatus = String(thin.payment_status || '').trim();
     if (paymentStatus !== 'paid') {
       // Ne jamais créditer/démarrer tant que Stripe n'a pas marqué le paiement comme réglé.
       return new Response(JSON.stringify({ received: true, ignored: 'not_paid' }), {
@@ -39,7 +73,17 @@ Deno.serve(async (req) => {
         status: 200,
       });
     }
-    const meta = session.metadata || {};
+
+    let session = thin;
+    let meta: Record<string, string> = { ...(thin.metadata || {}) };
+    try {
+      const loaded = await getSessionWithMergedMetadata(thin.id);
+      session = loaded.session;
+      meta = loaded.meta;
+    } catch (e) {
+      console.error('checkout.sessions.retrieve (merge meta):', e);
+    }
+
     const checkoutKind = (meta.checkout_kind || '').trim();
     const esp32Id = meta.esp32_id;
     const userId = meta.user_id;
@@ -47,13 +91,35 @@ Deno.serve(async (req) => {
     const emplacementId = meta.emplacement_id;
     const amountCents = session.amount_total != null ? session.amount_total : 0;
 
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-    );
+    const serviceRole = getServiceRoleKey();
+    if (!serviceRole) {
+      console.error(
+        'stripe-webhook: clé service role absente. Ajoute le secret SERVICE_ROLE_KEY (valeur = clé service_role du dashboard API) ou vérifie l’injection auto.'
+      );
+      return new Response(JSON.stringify({ error: 'missing_service_role' }), { status: 500 });
+    }
 
-    // Recharge portefeuille (une seule transaction Stripe → crédit interne)
-    if (checkoutKind === 'wallet_recharge' && userId && userId.length > 10 && amountCents > 0) {
+    const supabase = createClient(Deno.env.get('SUPABASE_URL')!, serviceRole);
+
+    // Recharge portefeuille — ne pas tomber silencieusement dans le flux machine si meta incomplète
+    if (checkoutKind === 'wallet_recharge') {
+      if (!userId || userId.length <= 10 || !amountCents || amountCents <= 0) {
+        console.error('wallet_recharge: métadonnées incomplètes après fusion', {
+          sessionId: session.id,
+          userId: userId || '',
+          amountCents,
+          metaKeys: Object.keys(meta),
+        });
+        return new Response(
+          JSON.stringify({
+            received: true,
+            ignored: 'wallet_incomplete_metadata',
+            hint: 'Vérifie create-checkout (metadata) et que la même clé Stripe test/live est utilisée partout.',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
       const piRaw = session.payment_intent;
       const paymentIntentId =
         typeof piRaw === 'string'
@@ -61,18 +127,34 @@ Deno.serve(async (req) => {
           : piRaw && typeof piRaw === 'object' && 'id' in (piRaw as Stripe.PaymentIntent)
             ? (piRaw as Stripe.PaymentIntent).id
             : null;
-      const { error: rechargeErr } = await supabase.rpc('apply_wallet_recharge', {
-        p_user_id: userId,
-        p_amount_centimes: amountCents,
-        p_stripe_session_id: session.id,
-        p_stripe_payment_intent_id: paymentIntentId,
-      });
+      let rechargeErr = (
+        await supabase.rpc('apply_wallet_recharge', {
+          p_user_id: userId,
+          p_amount_centimes: amountCents,
+          p_stripe_session_id: session.id,
+          p_stripe_payment_intent_id: paymentIntentId,
+        })
+      ).error;
+      if (
+        rechargeErr &&
+        (rechargeErr.message?.includes('Could not find') ||
+          rechargeErr.message?.includes('function public.apply_wallet_recharge') ||
+          rechargeErr.code === 'PGRST202')
+      ) {
+        rechargeErr = (
+          await supabase.rpc('apply_wallet_recharge', {
+            p_user_id: userId,
+            p_amount_centimes: amountCents,
+            p_stripe_session_id: session.id,
+          })
+        ).error;
+      }
       if (rechargeErr) {
         console.error('apply_wallet_recharge:', rechargeErr);
         return new Response(JSON.stringify({ error: rechargeErr.message }), { status: 500 });
       }
       console.log('Portefeuille crédité:', userId, amountCents, session.id);
-      return new Response(JSON.stringify({ received: true }), {
+      return new Response(JSON.stringify({ received: true, wallet: true }), {
         headers: { 'Content-Type': 'application/json' },
         status: 200,
       });
@@ -129,10 +211,12 @@ Deno.serve(async (req) => {
       });
     }
 
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-    );
+    const sr = getServiceRoleKey();
+    if (!sr) {
+      console.error('stripe-webhook refund: service role manquante');
+      return new Response(JSON.stringify({ error: 'missing_service_role' }), { status: 500 });
+    }
+    const supabase = createClient(Deno.env.get('SUPABASE_URL')!, sr);
 
     try {
       const charge = await stripe.charges.retrieve(chargeId, { expand: ['payment_intent'] });

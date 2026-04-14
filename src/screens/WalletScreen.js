@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -20,6 +20,8 @@ import { createWalletCheckout } from '../services/stripeService';
 import { showAlert } from '../utils/alert';
 
 const RECHARGE_AMOUNTS = [10, 20, 50];
+const POST_CHECKOUT_POLL_MS = 3000;
+const POST_CHECKOUT_POLL_DURATION_MS = 60000;
 
 export default function WalletScreen({ navigation }) {
   const { user } = useAuth();
@@ -27,6 +29,14 @@ export default function WalletScreen({ navigation }) {
   const [balanceCentimes, setBalanceCentimes] = useState(null);
   const [loading, setLoading] = useState(true);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const pollTimerRef = useRef(null);
+
+  const stopPostCheckoutPolling = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearInterval(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!user?.id) {
@@ -39,6 +49,27 @@ export default function WalletScreen({ navigation }) {
     setBalanceCentimes(b);
     setLoading(false);
   }, [user?.id]);
+
+  const startPostCheckoutPolling = useCallback((startingBalance) => {
+    stopPostCheckoutPolling();
+    const startedAt = Date.now();
+    pollTimerRef.current = setInterval(async () => {
+      if (!user?.id) {
+        stopPostCheckoutPolling();
+        return;
+      }
+      const { balanceCentimes: nextBalance } = await getWalletBalance(user.id);
+      setBalanceCentimes(nextBalance);
+
+      const timedOut = Date.now() - startedAt >= POST_CHECKOUT_POLL_DURATION_MS;
+      const balanceUpdated =
+        startingBalance == null ? nextBalance != null : Number(nextBalance) > Number(startingBalance);
+
+      if (timedOut || balanceUpdated) {
+        stopPostCheckoutPolling();
+      }
+    }, POST_CHECKOUT_POLL_MS);
+  }, [stopPostCheckoutPolling, user?.id]);
 
   useFocusEffect(
     useCallback(() => {
@@ -53,7 +84,9 @@ export default function WalletScreen({ navigation }) {
     return () => sub.remove();
   }, [refresh, user?.id]);
 
-  const handleRecharge = async (amountEur) => {
+  useEffect(() => stopPostCheckoutPolling, [stopPostCheckoutPolling]);
+
+  const handleRecharge = useCallback(async (amountEur) => {
     if (!user?.id) {
       showAlert(t('error'), t('mustBeLoggedIn'), [{ text: t('ok') }]);
       return;
@@ -68,11 +101,12 @@ export default function WalletScreen({ navigation }) {
         showAlert(t('error'), error || t('stripeError'), [{ text: t('ok') }]);
         return;
       }
+      startPostCheckoutPolling(balanceCentimes);
       showAlert(t('stripeOpenTitle'), t('walletStripeAfterPay'), [{ text: t('ok') }]);
     } finally {
       setCheckoutLoading(false);
     }
-  };
+  }, [balanceCentimes, startPostCheckoutPolling, t, user?.id]);
 
   const displayBalance =
     balanceCentimes == null ? '—' : (balanceCentimes / 100).toFixed(2);
