@@ -1,0 +1,2 @@
+# Appel depuis le board (anon) + clé CRM côté serveur uniquement
+verify_jwt = false

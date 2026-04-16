@@ -30,7 +30,25 @@ export async function getMachinesByEmplacement(emplacementId) {
     .eq('emplacement_id', emplacementId)
     .order('id');
 
-  return { data: data || [], error };
+  const visibleMachines = (data || []).filter((machine) => machine?.actif !== false);
+  return { data: visibleMachines, error };
+}
+
+export async function getMachineAvailabilityState(machineId) {
+  if (!supabase || !machineId) return { actif: null, hors_service: null, error: 'missing_machine_id' };
+
+  const { data, error } = await supabase
+    .from('machines')
+    .select('actif, hors_service')
+    .eq('id', machineId)
+    .maybeSingle();
+
+  if (error) return { actif: null, hors_service: null, error: error.message };
+  return {
+    actif: data?.actif ?? null,
+    hors_service: data?.hors_service ?? null,
+    error: null,
+  };
 }
 
 export async function setMachineAvailableById(machineId) {

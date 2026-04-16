@@ -87,6 +87,15 @@ BEGIN
     RETURN json_build_object('success', false, 'error', 'invalid_machine_or_emplacement');
   END IF;
 
+  IF EXISTS (
+    SELECT 1
+    FROM public.machines m
+    WHERE m.id = p_machine_id
+      AND coalesce(m.hors_service, false) = true
+  ) THEN
+    RETURN json_build_object('success', false, 'error', 'machine_out_of_service');
+  END IF;
+
   IF p_price_centimes IS NULL OR p_price_centimes <= 0 THEN
     RETURN json_build_object('success', false, 'error', 'invalid_amount');
   END IF;

@@ -23,7 +23,7 @@ import { useLaundryTimer } from '../context/LaundryTimerContext';
 import { createTransactionAndStartMachine, createTransactionAndPayWithWallet } from '../services/transactionService';
 import { getWalletBalance } from '../services/walletService';
 import { validateAndUsePromoCode, getUserAvailablePromoCodes } from '../services/promoService';
-import { getMachinesByEmplacement, setMachineAvailableById } from '../services/laundryService';
+import { getMachinesByEmplacement, getMachineAvailabilityState, setMachineAvailableById } from '../services/laundryService';
 import { checkEsp32Online, getEsp32IdForMachine } from '../services/esp32Service';
 import { createCheckoutAndPay } from '../services/stripeService';
 import { showAlert } from '../utils/alert';
@@ -72,6 +72,10 @@ function isStatutDisponible(statut) {
 function isStatutOccupe(statut) {
   const s = normalizeMachineStatut(statut);
   return s === 'occupe' || s === 'occupied';
+}
+
+function isMachineOutOfService(machine) {
+  return machine?.hors_service === true;
 }
 
 export default function LaundryDetailScreen({ route, navigation }) {
@@ -334,6 +338,7 @@ export default function LaundryDetailScreen({ route, navigation }) {
   };
 
   const selectedMachineBusy = selectedMachineFromList && isStatutOccupe(selectedMachineFromList.statut);
+  const selectedMachineOutOfService = isMachineOutOfService(selectedMachineFromList);
 
   const handleForceAvailable = async () => {
     if (!selectedMachine?.id) return;
@@ -367,6 +372,10 @@ export default function LaundryDetailScreen({ route, navigation }) {
 
   const handlePay = () => {
     if (!selectedMachine) return;
+    if (selectedMachineOutOfService) {
+      showAlert(t('error'), t('machineOutOfService'), [{ text: t('ok') }]);
+      return;
+    }
     const esp32Id = getEsp32Id();
     if (!esp32Id) {
       showAlert(t('esp32NotConfigured'), t('esp32ConfigHint'), [{ text: t('ok') }]);
@@ -381,6 +390,13 @@ export default function LaundryDetailScreen({ route, navigation }) {
   const handlePayByCard = async () => {
     if (!user?.id) {
       throw new Error(t('mustBeLoggedIn'));
+    }
+    const { hors_service, error: availabilityError } = await getMachineAvailabilityState(selectedMachineFromList?.id);
+    if (availabilityError) {
+      throw new Error(availabilityError);
+    }
+    if (hors_service === true) {
+      throw new Error(t('machineOutOfService'));
     }
     const esp32Id = getEsp32Id();
     if (!esp32Id) {
@@ -416,6 +432,13 @@ export default function LaundryDetailScreen({ route, navigation }) {
   const handlePayWithWallet = async () => {
     if (!user?.id) {
       throw new Error(t('mustBeLoggedIn'));
+    }
+    const { hors_service, error: availabilityError } = await getMachineAvailabilityState(selectedMachineFromList?.id);
+    if (availabilityError) {
+      throw new Error(availabilityError);
+    }
+    if (hors_service === true) {
+      throw new Error(t('machineOutOfService'));
     }
     const esp32Id = getEsp32Id();
     if (!esp32Id) {
@@ -509,6 +532,13 @@ export default function LaundryDetailScreen({ route, navigation }) {
     if (!user?.id) {
       throw new Error(t('mustBeLoggedIn'));
     }
+    const { hors_service, error: availabilityError } = await getMachineAvailabilityState(selectedMachineFromList?.id);
+    if (availabilityError) {
+      throw new Error(availabilityError);
+    }
+    if (hors_service === true) {
+      throw new Error(t('machineOutOfService'));
+    }
     const esp32Id = getEsp32Id();
     if (!esp32Id) {
       throw new Error(t('esp32NotConfigured'));
@@ -559,11 +589,13 @@ export default function LaundryDetailScreen({ route, navigation }) {
   const renderMachineRow = (machine) => {
     const isSelected = selectedMachine?.id === machine.id;
     const isOccupied = isStatutOccupe(machine.statut);
+    const outOfService = isMachineOutOfService(machine);
     const dbFree = isStatutDisponible(machine.statut);
     const espOnline = espOnlineByMachineId[machine.id];
     const espConfirmedOnline = espOnline === true;
     const espOfflineButDbFree = dbFree && (espStatusReady ? !espConfirmedOnline : true);
     let statusColor = getStatusColor(machine.statut);
+    if (outOfService) statusColor = colors.error;
     if (espOfflineButDbFree) statusColor = colors.warning;
     else if (dbFree && espConfirmedOnline) statusColor = colors.success;
     const isHourly = isDryerMachine(machine);
@@ -582,6 +614,7 @@ export default function LaundryDetailScreen({ route, navigation }) {
           styles.machineCard,
           isSelected && styles.machineCardSelected,
           isOccupied && styles.machineCardOccupied,
+          outOfService && styles.machineCardOutOfService,
           espOfflineButDbFree && styles.machineCardWarning,
         ]}
         onPress={() => setSelectedMachine(machine)}
@@ -601,8 +634,11 @@ export default function LaundryDetailScreen({ route, navigation }) {
             <Text style={[
               styles.machineStatus,
               isOccupied && styles.machineStatusOccupied,
+              outOfService && styles.machineStatusOutOfService,
             ]}>
-              {isOccupied
+              {outOfService
+                ? t('machineOutOfService')
+                : isOccupied
                 ? t('unavailable')
                 : espOfflineButDbFree
                   ? !espStatusReady
@@ -692,7 +728,11 @@ export default function LaundryDetailScreen({ route, navigation }) {
         </View>
 
         <View style={styles.paySection}>
-          {selectedMachine && selectedEspOnline !== true && (
+          {selectedMachineOutOfService ? (
+            <View style={styles.offlineBox}>
+              <Text style={styles.outOfServiceMessage}>{t('machineOutOfService')}</Text>
+            </View>
+          ) : selectedMachine && selectedEspOnline !== true && (
             <View style={styles.offlineBox}>
               <Text style={styles.offlineMessage}>
                 {!espStatusReady ? t('checkingEsp') : t('machineOffline')}
@@ -708,7 +748,7 @@ export default function LaundryDetailScreen({ route, navigation }) {
             title={selectedMachine && getMachineAmount() > 0 ? `${t('paid')} — ${getMachineAmount().toFixed(2)} €` : t('paid')}
             onPress={handlePay}
             size="lg"
-            disabled={!selectedMachine || !isOnline || selectedMachineBusy}
+            disabled={!selectedMachine || !isOnline || selectedMachineBusy || selectedMachineOutOfService}
           />
           <Text style={styles.stripeNote}>
             {t('cardOrPromo')}
@@ -852,6 +892,10 @@ const styles = StyleSheet.create({
     borderColor: '#DC2626',
     backgroundColor: '#FEE2E2',
   },
+  machineCardOutOfService: {
+    borderColor: colors.error,
+    backgroundColor: colors.error + '12',
+  },
   machineCardWarning: {
     borderColor: colors.warning,
     backgroundColor: colors.warning + '18',
@@ -882,6 +926,10 @@ const styles = StyleSheet.create({
   },
   machineStatusOccupied: {
     color: '#DC2626',
+    fontWeight: typography.semibold,
+  },
+  machineStatusOutOfService: {
+    color: colors.error,
     fontWeight: typography.semibold,
   },
   machineStatusSub: {
@@ -920,6 +968,13 @@ const styles = StyleSheet.create({
   offlineMessage: {
     fontSize: typography.sm,
     color: colors.warning,
+    marginBottom: spacing.xs,
+    textAlign: 'center',
+    fontWeight: typography.semibold,
+  },
+  outOfServiceMessage: {
+    fontSize: typography.sm,
+    color: colors.error,
     marginBottom: spacing.xs,
     textAlign: 'center',
     fontWeight: typography.semibold,

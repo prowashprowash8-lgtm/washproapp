@@ -181,6 +181,7 @@ export default {
   esp32NotConfigured: '未配置 ESP32',
   esp32ConfigHint: '请在后台（Supabase）为地点添加 esp32_id。',
   machineOffline: '设备已关机 — 请先开机！',
+  machineOutOfService: '停用中',
   esp32Offline: 'ESP32 未连接',
   esp32OfflineHint: 'ESP32 无响应。请接通电源，几秒后重试。',
   ensureMachineOn: '请确认设备已开机。',

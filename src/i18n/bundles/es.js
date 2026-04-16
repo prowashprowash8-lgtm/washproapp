@@ -183,6 +183,7 @@ export default {
   esp32NotConfigured: 'ESP32 no configurado',
   esp32ConfigHint: 'Añade esp32_id al local en el panel (Supabase).',
   machineOffline: 'Máquina apagada — ¡enciéndela!',
+  machineOutOfService: 'Fuera de servicio',
   esp32Offline: 'ESP32 no conectado',
   esp32OfflineHint: 'El ESP32 no responde. Conéctalo y espera unos segundos.',
   ensureMachineOn: 'Asegúrate de que la máquina esté encendida.',

@@ -89,6 +89,15 @@ begin
     raise exception 'invalid_machine_or_emplacement';
   end if;
 
+  if exists (
+    select 1
+    from public.machines m
+    where m.id = p_machine_id
+      and coalesce(m.hors_service, false) = true
+  ) then
+    raise exception 'machine_out_of_service';
+  end if;
+
   -- Créer la transaction
   insert into transactions (user_id, machine_id, emplacement_id, amount, payment_method, promo_code, status)
   values (p_user_id, p_machine_id, p_emplacement_id, p_amount, p_payment_method, p_promo_code, 'completed')

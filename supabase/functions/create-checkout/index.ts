@@ -9,6 +9,8 @@ const STRIPE_CHECKOUT_SESSIONS = 'https://api.stripe.com/v1/checkout/sessions';
 // Ne pas envoyer Stripe-Version : une date invalide provoque « Invalid Stripe API version ».
 // Stripe utilise alors la version par défaut du compte (Dashboard → Développeurs → version API).
 
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -66,6 +68,14 @@ function getStripeSecretKey(): string {
   }
 
   return key;
+}
+
+function getServiceRoleKey(): string {
+  const auto = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  if (auto && auto.length > 20) return auto;
+  const manual = Deno.env.get('SERVICE_ROLE_KEY');
+  if (manual && manual.length > 20) return manual;
+  return '';
 }
 
 /** Stripe Checkout exige des URLs https ; washproapp:// est remplacé. */
@@ -190,6 +200,36 @@ Deno.serve(async (req) => {
           machine_id: String(machine_id || ''),
           emplacement_id: String(emplacement_id || ''),
         };
+
+    if (!isWallet) {
+      const serviceRole = getServiceRoleKey();
+      const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
+      if (!serviceRole || !supabaseUrl) {
+        return jsonResponse({ error: 'service_role_missing_for_machine_check' }, 500);
+      }
+
+      const admin = createClient(supabaseUrl, serviceRole, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const machineIdValue = String(machine_id || '').trim();
+      if (!machineIdValue) {
+        return jsonResponse({ error: 'machine_id requis' }, 400);
+      }
+      const { data: machineRow, error: machineErr } = await admin
+        .from('machines')
+        .select('hors_service')
+        .eq('id', machineIdValue)
+        .maybeSingle();
+      if (machineErr) {
+        return jsonResponse({ error: machineErr.message }, 500);
+      }
+      if (!machineRow) {
+        return jsonResponse({ error: 'machine_not_found' }, 404);
+      }
+      if (machineRow.hors_service === true) {
+        return jsonResponse({ error: 'machine_out_of_service' }, 409);
+      }
+    }
 
     const url = await createCheckoutSessionFetch({
       amountCents,
