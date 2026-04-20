@@ -73,7 +73,22 @@ export default function TransactionScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      if (user?.id) markAllSeen();
+      if (!user?.id) return () => {};
+      const timer = setTimeout(async () => {
+        await markAllSeen();
+        setTransactions((prev) =>
+          (prev || []).map((tx) => {
+            if (
+              (tx?.refund_request_statut === 'approved' || tx?.refund_request_statut === 'rejected') &&
+              tx?.refund_response_seen_at == null
+            ) {
+              return { ...tx, refund_response_seen_at: new Date().toISOString() };
+            }
+            return tx;
+          })
+        );
+      }, 8000);
+      return () => clearTimeout(timer);
     }, [user?.id, markAllSeen])
   );
   const [transactions, setTransactions] = useState([]);
@@ -153,7 +168,20 @@ export default function TransactionScreen() {
     const mergedRows = [
       ...(transactions || []).map((tx) => ({ kind: 'machine', created_at: tx.created_at, tx })),
       ...(walletActivity || []).map((w) => ({ kind: 'wallet', created_at: w.created_at, wallet: w })),
-    ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    ].sort((a, b) => {
+      const aPinned =
+        a.kind === 'machine' &&
+        (a.tx?.refund_request_statut === 'approved' || a.tx?.refund_request_statut === 'rejected') &&
+        a.tx?.refund_response_seen_at == null;
+      const bPinned =
+        b.kind === 'machine' &&
+        (b.tx?.refund_request_statut === 'approved' || b.tx?.refund_request_statut === 'rejected') &&
+        b.tx?.refund_response_seen_at == null;
+
+      if (aPinned && !bPinned) return -1;
+      if (!aPinned && bPinned) return 1;
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
 
     if (loading) {
       return (
@@ -244,6 +272,8 @@ export default function TransactionScreen() {
           const compensation = tx.refund_compensation_code || null;
           const compensationUsed = tx.refund_compensation_used === true;
           const legacyRefunded = tx.status === 'refunded';
+          const refundedByDecision = rr === 'approved';
+          const displayRefunded = legacyRefunded || refundedByDecision;
           return (
             <View key={`tx-${tx.id}`} style={styles.card}>
               <View style={styles.cardHeader}>
@@ -271,9 +301,9 @@ export default function TransactionScreen() {
                 </View>
                 <Text style={[
                   styles.amount,
-                  legacyRefunded && !rr && styles.amountRefunded,
+                  displayRefunded && styles.amountRefunded,
                 ]}>
-                  {legacyRefunded && !rr
+                  {displayRefunded
                     ? t('refunded')
                     : tx.payment_method === 'promo'
                       ? t('free')

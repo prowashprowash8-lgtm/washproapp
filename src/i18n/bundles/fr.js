@@ -53,7 +53,7 @@ export default {
   machine: 'Machine',
   laundry: 'Laverie',
   free: 'Gratuit',
-  refunded: 'Remboursé',
+  refunded: 'Remboursée',
   refundRequestApproved: 'Remboursée',
   refundRequestRejected: 'Refusée',
   refundRequestPending: 'Demande en attente',

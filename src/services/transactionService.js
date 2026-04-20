@@ -10,6 +10,76 @@ function normalizeEsp32Id(value) {
   return raw.trim().toUpperCase();
 }
 
+async function enrichRefundStatusFallback(rows) {
+  if (!supabase || !Array.isArray(rows) || rows.length === 0) return rows || [];
+
+  const txIds = rows.map((r) => r?.id).filter(Boolean);
+  if (txIds.length === 0) return rows;
+
+  const { data: rrRows, error: rrError } = await supabase
+    .from('refund_requests')
+    .select('transaction_id, statut, compensation_promo_code, response_seen_at, created_at')
+    .in('transaction_id', txIds)
+    .order('created_at', { ascending: false });
+
+  if (rrError || !Array.isArray(rrRows) || rrRows.length === 0) return rows;
+
+  const latestByTx = new Map();
+  for (const rr of rrRows) {
+    if (!rr?.transaction_id) continue;
+    if (!latestByTx.has(rr.transaction_id)) {
+      latestByTx.set(rr.transaction_id, rr);
+    }
+  }
+
+  const compCodes = Array.from(
+    new Set(
+      rrRows
+        .map((r) => (r?.compensation_promo_code || '').trim().toUpperCase())
+        .filter(Boolean)
+    )
+  );
+
+  const usesByCode = new Map();
+  if (compCodes.length > 0) {
+    const { data: promoRows } = await supabase
+      .from('promo_codes')
+      .select('code, uses_remaining')
+      .in('code', compCodes);
+
+    for (const p of promoRows || []) {
+      const key = (p?.code || '').trim().toUpperCase();
+      if (!key) continue;
+      usesByCode.set(key, Number(p?.uses_remaining ?? 0));
+    }
+  }
+
+  return rows.map((tx) => {
+    const rr = latestByTx.get(tx?.id);
+    if (!rr) return tx;
+
+    const rrStatut = rr?.statut || null;
+    const rrCode = rr?.compensation_promo_code || null;
+    let rrUsed = tx?.refund_compensation_used;
+
+    if (rrStatut === 'approved' && rrCode) {
+      const key = rrCode.trim().toUpperCase();
+      const usesRemaining = usesByCode.has(key) ? usesByCode.get(key) : null;
+      rrUsed = usesRemaining == null ? true : Number(usesRemaining) <= 0;
+    } else {
+      rrUsed = null;
+    }
+
+    return {
+      ...tx,
+      refund_request_statut: rrStatut,
+      refund_compensation_code: rrCode,
+      refund_compensation_used: rrUsed,
+      refund_response_seen_at: rr?.response_seen_at || null,
+    };
+  });
+}
+
 /**
  * Crée une transaction et envoie la commande de démarrage à l'ESP32
  * @param {object} params
@@ -120,7 +190,25 @@ export async function getUserTransactions(userId) {
     p_user_id: userId,
   });
 
-  return { data: data || [], error };
+  if (error) return { data: data || [], error };
+
+  const rows = Array.isArray(data) ? data : [];
+  const hasRefundColumns = rows.some(
+    (tx) =>
+      tx &&
+      (Object.prototype.hasOwnProperty.call(tx, 'refund_request_statut') ||
+        Object.prototype.hasOwnProperty.call(tx, 'refund_compensation_code'))
+  );
+
+  if (!hasRefundColumns) {
+    const enriched = await enrichRefundStatusFallback(rows);
+    return { data: enriched, error: null };
+  }
+
+  // Même si la RPC renvoie déjà les infos remboursement, on complète avec response_seen_at
+  // pour permettre le tri temporaire des réponses récentes en haut de l'activité.
+  const enriched = await enrichRefundStatusFallback(rows);
+  return { data: enriched, error: null };
 }
 
 /**

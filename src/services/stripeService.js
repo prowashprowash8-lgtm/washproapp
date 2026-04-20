@@ -4,6 +4,7 @@
 
 import { supabase } from '../lib/supabase';
 import { Platform } from 'react-native';
+import { Linking } from 'react-native';
 import * as WebBrowser from 'expo-web-browser';
 
 /**
@@ -167,6 +168,18 @@ export async function createWalletCheckout({ userId, amountEur }) {
     cancel_url: cancelUrl,
   };
 
+  // Compat ancienne Edge Function create-checkout (sans checkout_kind explicite).
+  const legacyPayload = {
+    amount: Number(amountEur) || 0,
+    machineName: 'Recharge portefeuille',
+    user_id: userId || '',
+    esp32_id: '',
+    machine_id: '',
+    emplacement_id: '',
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+  };
+
   try {
     let data = null;
     let error = null;
@@ -225,6 +238,19 @@ export async function createWalletCheckout({ userId, amountEur }) {
     }
 
     if (error) {
+      // Fallback legacy: certains déploiements plus anciens rejettent checkout_kind.
+      try {
+        const legacyResult = await supabase.functions.invoke('create-checkout', { body: legacyPayload });
+        if (!legacyResult.error && legacyResult.data?.url) {
+          data = legacyResult.data;
+          error = null;
+        }
+      } catch {
+        // On garde l'erreur initiale
+      }
+    }
+
+    if (error) {
       return { success: false, error: typeof error.message === 'string' ? error.message : invokeMsg };
     }
     if (data?.error) {
@@ -243,6 +269,15 @@ export async function createWalletCheckout({ userId, amountEur }) {
       await WebBrowser.openBrowserAsync(data.url);
       return { success: true };
     } catch (e) {
+      try {
+        const can = await Linking.canOpenURL(data.url);
+        if (can) {
+          await Linking.openURL(data.url);
+          return { success: true };
+        }
+      } catch {
+        // no-op
+      }
       return { success: false, error: e?.message || 'Impossible d\'ouvrir le paiement' };
     }
   } catch (err) {

@@ -15,7 +15,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, spacing, typography, borderRadius } from '../theme/colors';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
-import { getWalletBalance, getWalletActivity } from '../services/walletService';
+import { getWalletBalance } from '../services/walletService';
 import { createWalletCheckout } from '../services/stripeService';
 import { showAlert } from '../utils/alert';
 
@@ -25,47 +25,10 @@ const POST_CHECKOUT_POLL_DURATION_MS = 60000;
 /** Rafraîchissement auto du solde tant que l’écran est ouvert (remboursements / crédits Stripe côté webhook). */
 const WALLET_FOCUS_POLL_MS = 6000;
 
-const DATE_LOCALE_BY_APP = {
-  fr: 'fr-FR',
-  en: 'en-GB',
-  de: 'de-DE',
-  it: 'it-IT',
-  zh: 'zh-CN',
-  es: 'es-ES',
-};
-
-function formatWalletRowDate(dateStr, locale) {
-  if (!dateStr) return '—';
-  const d = new Date(dateStr);
-  const tag = DATE_LOCALE_BY_APP[locale] || 'en-GB';
-  return d.toLocaleDateString(tag, {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-function activityLabel(activityKind, t) {
-  switch (activityKind) {
-    case 'wallet_recharge':
-      return t('walletActivityRecharge');
-    case 'wallet_refund':
-      return t('walletActivityRefund');
-    case 'wallet_machine_debit':
-      return t('walletActivityMachineDebit');
-    default:
-      return t('walletActivityOther');
-  }
-}
-
 export default function WalletScreen({ navigation }) {
   const { user } = useAuth();
-  const { t, locale } = useLanguage();
+  const { t } = useLanguage();
   const [balanceCentimes, setBalanceCentimes] = useState(null);
-  const [activityLines, setActivityLines] = useState([]);
-  const [activityLoadError, setActivityLoadError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const pollTimerRef = useRef(null);
@@ -81,28 +44,14 @@ export default function WalletScreen({ navigation }) {
     async (silent) => {
       if (!user?.id) {
         setBalanceCentimes(0);
-        setActivityLines([]);
-        setActivityLoadError(null);
         if (!silent) setLoading(false);
         return;
       }
       if (!silent) setLoading(true);
       try {
         const bal = await getWalletBalance(user.id);
-        const act = await getWalletActivity(user.id);
         setBalanceCentimes(bal.balanceCentimes);
-        if (act.error) {
-          setActivityLines([]);
-          setActivityLoadError(act.error.message || String(act.error));
-          if (__DEV__) {
-            console.warn('[Wallet] get_user_wallet_activity:', act.error);
-          }
-        } else {
-          setActivityLines(Array.isArray(act.lines) ? act.lines : []);
-          setActivityLoadError(null);
-        }
       } catch (e) {
-        setActivityLoadError(e?.message || 'Wallet load error');
         if (__DEV__) console.warn('[Wallet] loadWalletData', e);
       }
       if (!silent) setLoading(false);
@@ -121,9 +70,7 @@ export default function WalletScreen({ navigation }) {
         return;
       }
       const bal = await getWalletBalance(user.id);
-      const act = await getWalletActivity(user.id);
       setBalanceCentimes(bal.balanceCentimes);
-      if (!act.error) setActivityLines(Array.isArray(act.lines) ? act.lines : []);
 
       const timedOut = Date.now() - startedAt >= POST_CHECKOUT_POLL_DURATION_MS;
       const nextBalance = bal.balanceCentimes;
@@ -165,11 +112,14 @@ export default function WalletScreen({ navigation }) {
         amountEur: amountEur,
       });
       if (!success) {
-        showAlert(t('error'), error || t('stripeError'), [{ text: t('ok') }]);
+        const detail = error ? `\n\n${error}` : '';
+        showAlert(t('error'), `${t('stripeError')}${detail}`, [{ text: t('ok') }]);
         return;
       }
       startPostCheckoutPolling(balanceCentimes);
       showAlert(t('stripeOpenTitle'), t('walletStripeAfterPay'), [{ text: t('ok') }]);
+    } catch (err) {
+      showAlert(t('error'), err?.message || t('stripeError'), [{ text: t('ok') }]);
     } finally {
       setCheckoutLoading(false);
     }
@@ -203,39 +153,6 @@ export default function WalletScreen({ navigation }) {
             <Text style={styles.balanceValue}>{displayBalance} €</Text>
           )}
         </View>
-
-        <Text style={styles.sectionTitle}>{t('walletActivityTitle')}</Text>
-        {activityLoadError ? (
-          <Text style={styles.activityError}>
-            {t('walletActivityLoadError')}
-            {__DEV__ && activityLoadError ? `\n(${activityLoadError})` : ''}
-          </Text>
-        ) : activityLines.length === 0 ? (
-          <Text style={styles.activityEmpty}>{t('walletActivityEmpty')}</Text>
-        ) : (
-          <View style={styles.activityList}>
-            {activityLines.map((row) => {
-              const isCredit = row.activity_kind === 'wallet_recharge';
-              const eur = (row.amount_centimes / 100).toFixed(2);
-              const amountText = isCredit ? `+${eur} €` : `−${eur} €`;
-              const amountColor =
-                row.activity_kind === 'wallet_refund'
-                  ? colors.warning
-                  : isCredit
-                    ? colors.primary
-                    : colors.text;
-              return (
-                <View key={row.id} style={styles.activityRow}>
-                  <View style={styles.activityRowLeft}>
-                    <Text style={styles.activityLabel}>{activityLabel(row.activity_kind, t)}</Text>
-                    <Text style={styles.activityDate}>{formatWalletRowDate(row.created_at, locale)}</Text>
-                  </View>
-                  <Text style={[styles.activityAmount, { color: amountColor }]}>{amountText}</Text>
-                </View>
-              );
-            })}
-          </View>
-        )}
 
         <Text style={[styles.sectionTitle, styles.rechargeSectionTitle]}>{t('walletRechargeTitle')}</Text>
         <View style={styles.amountRow}>
@@ -342,51 +259,6 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   rechargeSectionTitle: {
-    marginTop: spacing.xl,
-  },
-  activityError: {
-    fontSize: typography.sm,
-    color: colors.error,
-    marginBottom: spacing.md,
-    lineHeight: 20,
-  },
-  activityEmpty: {
-    fontSize: typography.sm,
-    color: colors.textSecondary,
-    marginBottom: spacing.md,
-  },
-  activityList: {
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: borderRadius.md,
-    backgroundColor: colors.surface,
-    overflow: 'hidden',
-  },
-  activityRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.md,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-  },
-  activityRowLeft: {
-    flex: 1,
-    paddingRight: spacing.sm,
-  },
-  activityLabel: {
-    fontSize: typography.base,
-    fontWeight: typography.semibold,
-    color: colors.text,
-  },
-  activityDate: {
-    fontSize: typography.xs,
-    color: colors.textMuted,
-    marginTop: spacing.xs,
-  },
-  activityAmount: {
-    fontSize: typography.lg,
-    fontWeight: typography.bold,
+    marginTop: spacing.lg,
   },
 });
