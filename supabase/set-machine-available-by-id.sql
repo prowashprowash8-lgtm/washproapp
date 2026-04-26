@@ -14,8 +14,7 @@ begin
 
   update public.machines
   set statut = 'disponible', estimated_end_time = null
-  where id = p_machine_id
-    and lower(coalesce(statut, '')) in ('occupe', 'occupied');
+  where id = p_machine_id;
   return found;
 end;
 $q$;
