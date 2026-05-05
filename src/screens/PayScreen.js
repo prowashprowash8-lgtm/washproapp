@@ -164,6 +164,7 @@ export default function PayScreen({ navigation }) {
             </View>
           )}
         </View>
+
       </ScrollView>
     </SafeAreaView>
   );

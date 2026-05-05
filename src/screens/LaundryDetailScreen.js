@@ -9,6 +9,8 @@ import {
   Platform,
   RefreshControl,
   AppState,
+  ActivityIndicator,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -26,6 +28,7 @@ import { validateAndUsePromoCode, getUserAvailablePromoCodes } from '../services
 import { getMachinesByEmplacement, getMachineAvailabilityState, setMachineAvailableById } from '../services/laundryService';
 import { checkEsp32Online, getEsp32IdForMachine } from '../services/esp32Service';
 import { createCheckoutAndPay } from '../services/stripeService';
+import { sendPickupReminder } from '../services/pickupReminderService';
 import { showAlert } from '../utils/alert';
 import { isDryerMachine, getMachineKind } from '../utils/machineKind';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
@@ -93,6 +96,9 @@ export default function LaundryDetailScreen({ route, navigation }) {
   const [durationModalVisible, setDurationModalVisible] = useState(false);
   const [durationSubmitBusy, setDurationSubmitBusy] = useState(false);
   const [availablePromoCodes, setAvailablePromoCodes] = useState([]);
+  const [pickupModalVisible, setPickupModalVisible] = useState(false);
+  const [pickupTargetMachineId, setPickupTargetMachineId] = useState(null);
+  const [pickupSending, setPickupSending] = useState(false);
   const pendingTimerMachineLabelRef = useRef(null);
   const blockPollingUntil = useRef(0); // timestamp jusqu'auquel on bloque le polling
   const postPaymentHoldMachineIdRef = useRef(null);
@@ -168,6 +174,43 @@ export default function LaundryDetailScreen({ route, navigation }) {
       setWalletBalanceCentimes(balanceCentimes);
     });
   }, [user?.id]);
+
+  const openPickupModal = useCallback(() => {
+    setPickupTargetMachineId(null);
+    setPickupModalVisible(true);
+  }, []);
+
+  const closePickupModal = useCallback(() => {
+    if (pickupSending) return;
+    setPickupModalVisible(false);
+    setPickupTargetMachineId(null);
+  }, [pickupSending]);
+
+  const confirmPickupReminder = useCallback(async () => {
+    if (!pickupTargetMachineId || pickupSending) return;
+    if (!user?.id) {
+      showAlert('Information', 'Vous devez être connecté pour envoyer un rappel.');
+      return;
+    }
+    setPickupSending(true);
+    try {
+      const result = await sendPickupReminder(pickupTargetMachineId, user.id);
+      if (result.success) {
+        const detail = result.hadTokens
+          ? 'Notification envoyée.'
+          : 'Demande enregistrée, mais aucun appareil push n’est associé à ce compte.';
+        setPickupModalVisible(false);
+        setPickupTargetMachineId(null);
+        showAlert('Succès', detail);
+      } else {
+        showAlert('Information', result.message || result.error || 'Impossible d\u2019envoyer le rappel.');
+      }
+    } catch (err) {
+      showAlert('Erreur', err?.message || 'Problème technique');
+    } finally {
+      setPickupSending(false);
+    }
+  }, [pickupTargetMachineId, pickupSending, user?.id]);
 
   const onRefreshList = useCallback(() => {
     setListRefreshing(true);
@@ -608,56 +651,58 @@ export default function LaundryDetailScreen({ route, navigation }) {
         : formatPrice(machinePrice) || '\u2014'
       : formatPrice(machinePrice) || '\u2014';
     return (
-      <TouchableOpacity
-        key={machine.id}
-        style={[
-          styles.machineCard,
-          isSelected && styles.machineCardSelected,
-          isOccupied && styles.machineCardOccupied,
-          outOfService && styles.machineCardOutOfService,
-          espOfflineButDbFree && styles.machineCardWarning,
-        ]}
-        onPress={() => setSelectedMachine(machine)}
-        activeOpacity={0.7}
-      >
-        <View style={[styles.statusBar, { backgroundColor: statusColor }]} />
-        <View style={styles.machineContent}>
-          <MaterialCommunityIcons
-            name={isHourly ? 'tumble-dryer' : 'washing-machine'}
-            size={32}
-            color={colors.primary}
-          />
-          <View style={styles.machineInfo}>
-            <Text style={styles.machineName}>
-              {(() => { const n = machine.name || machine.nom || ''; return n.charAt(0).toUpperCase() + n.slice(1); })()}{priceDisplay ? ` — ${priceDisplay}` : ''}
-            </Text>
-            <Text style={[
-              styles.machineStatus,
-              isOccupied && styles.machineStatusOccupied,
-              outOfService && styles.machineStatusOutOfService,
-            ]}>
-              {outOfService
-                ? t('machineOutOfService')
-                : isOccupied
-                ? t('unavailable')
-                : espOfflineButDbFree
-                  ? !espStatusReady
-                    ? t('checkingEsp')
-                    : t('machineRemoteUnavailable')
-                  : dbFree && espConfirmedOnline
-                    ? t('available')
-                    : machine.statut || t('available')}
-            </Text>
-          </View>
-          {isSelected && (
+      <View key={machine.id} style={styles.machineContainer}>
+        <TouchableOpacity
+          style={[
+            styles.machineCard,
+            isSelected && styles.machineCardSelected,
+            isOccupied && styles.machineCardOccupied,
+            outOfService && styles.machineCardOutOfService,
+            espOfflineButDbFree && styles.machineCardWarning,
+          ]}
+          onPress={() => setSelectedMachine(machine)}
+          activeOpacity={0.7}
+        >
+          <View style={[styles.statusBar, { backgroundColor: statusColor }]} />
+          <View style={styles.machineContent}>
             <MaterialCommunityIcons
-              name="check-circle"
-              size={24}
+              name={isHourly ? 'tumble-dryer' : 'washing-machine'}
+              size={32}
               color={colors.primary}
             />
-          )}
-        </View>
-      </TouchableOpacity>
+            <View style={styles.machineInfo}>
+              <Text style={styles.machineName}>
+                {(() => { const n = machine.name || machine.nom || ''; return n.charAt(0).toUpperCase() + n.slice(1); })()}{priceDisplay ? ` — ${priceDisplay}` : ''}
+              </Text>
+              <Text style={[
+                styles.machineStatus,
+                isOccupied && styles.machineStatusOccupied,
+                outOfService && styles.machineStatusOutOfService,
+              ]}>
+                {outOfService
+                  ? t('machineOutOfService')
+                  : isOccupied
+                  ? t('unavailable')
+                  : espOfflineButDbFree
+                    ? !espStatusReady
+                      ? t('checkingEsp')
+                      : t('machineRemoteUnavailable')
+                    : dbFree && espConfirmedOnline
+                      ? t('available')
+                      : machine.statut || t('available')}
+              </Text>
+            </View>
+            {isSelected && (
+              <MaterialCommunityIcons
+                name="check-circle"
+                size={24}
+                color={colors.primary}
+              />
+            )}
+          </View>
+        </TouchableOpacity>
+        
+      </View>
     );
   };
 
@@ -727,6 +772,23 @@ export default function LaundryDetailScreen({ route, navigation }) {
           )}
         </View>
 
+        {availableMachines.length > 0 && (
+          <TouchableOpacity
+            style={styles.pickupReminderCta}
+            onPress={openPickupModal}
+            activeOpacity={0.85}
+          >
+            <MaterialCommunityIcons name="bell-ring-outline" size={22} color={colors.primary} />
+            <View style={styles.pickupReminderCtaText}>
+              <Text style={styles.pickupReminderCtaTitle}>Prévenir un utilisateur</Text>
+              <Text style={styles.pickupReminderCtaSubtitle}>
+                Envoyer une notification pour récupérer le linge
+              </Text>
+            </View>
+            <MaterialCommunityIcons name="chevron-right" size={22} color={colors.textMuted} />
+          </TouchableOpacity>
+        )}
+
         <View style={styles.paySection}>
           {selectedMachineOutOfService ? (
             <View style={styles.offlineBox}>
@@ -778,6 +840,106 @@ export default function LaundryDetailScreen({ route, navigation }) {
         onSubmit={handleDurationSubmit}
         loading={durationSubmitBusy}
       />
+
+      <Modal
+        visible={pickupModalVisible}
+        animationType="slide"
+        transparent
+        onRequestClose={closePickupModal}
+      >
+        <View style={styles.pickupModalBackdrop}>
+          <View style={styles.pickupModalSheet}>
+            <View style={styles.pickupModalHeader}>
+              <Text style={styles.pickupModalTitle}>Choisir une machine</Text>
+              <Text style={styles.pickupModalSubtitle}>
+                On préviendra le dernier utilisateur de la machine sélectionnée.
+              </Text>
+            </View>
+
+            <ScrollView style={styles.pickupModalList} contentContainerStyle={styles.pickupModalListContent}>
+              {availableMachines.length === 0 ? (
+                <Text style={styles.pickupModalEmpty}>Aucune machine disponible.</Text>
+              ) : (
+                availableMachines.map((m) => {
+                  const selected = pickupTargetMachineId === m.id;
+                  const occupied = isStatutOccupe(m.statut);
+                  const label = (() => {
+                    const n = m.name || m.nom || '';
+                    return n.charAt(0).toUpperCase() + n.slice(1);
+                  })();
+                  return (
+                    <TouchableOpacity
+                      key={m.id}
+                      style={[
+                        styles.pickupModalItem,
+                        selected && styles.pickupModalItemSelected,
+                      ]}
+                      onPress={() => setPickupTargetMachineId(m.id)}
+                      disabled={pickupSending}
+                      activeOpacity={0.7}
+                    >
+                      <MaterialCommunityIcons
+                        name={isDryerMachine(m) ? 'tumble-dryer' : 'washing-machine'}
+                        size={26}
+                        color={colors.primary}
+                      />
+                      <View style={styles.pickupModalItemText}>
+                        <Text style={styles.pickupModalItemName}>{label || t('machine')}</Text>
+                        <Text
+                          style={[
+                            styles.pickupModalItemStatus,
+                            occupied && { color: '#DC2626', fontWeight: typography.semibold },
+                          ]}
+                        >
+                          {occupied ? t('unavailable') : t('available')}
+                        </Text>
+                      </View>
+                      {selected ? (
+                        <MaterialCommunityIcons name="check-circle" size={22} color={colors.primary} />
+                      ) : (
+                        <MaterialCommunityIcons
+                          name="circle-outline"
+                          size={22}
+                          color={colors.textMuted}
+                        />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })
+              )}
+            </ScrollView>
+
+            <View style={styles.pickupModalActions}>
+              <TouchableOpacity
+                style={styles.pickupModalCancel}
+                onPress={closePickupModal}
+                disabled={pickupSending}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.pickupModalCancelText}>{t('cancel')}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.pickupModalConfirm,
+                  (!pickupTargetMachineId || pickupSending) && styles.pickupModalConfirmDisabled,
+                ]}
+                onPress={confirmPickupReminder}
+                disabled={!pickupTargetMachineId || pickupSending}
+                activeOpacity={0.85}
+              >
+                {pickupSending ? (
+                  <ActivityIndicator size="small" color={colors.surface} />
+                ) : (
+                  <MaterialCommunityIcons name="bell-ring" size={18} color={colors.surface} />
+                )}
+                <Text style={styles.pickupModalConfirmText}>
+                  {pickupSending ? 'Envoi…' : 'Envoyer la notification'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -900,6 +1062,9 @@ const styles = StyleSheet.create({
     borderColor: colors.warning,
     backgroundColor: colors.warning + '18',
   },
+  machineContainer: {
+    marginBottom: spacing.md,
+  },
   statusBar: {
     width: 6,
     borderRadius: 3,
@@ -990,5 +1155,138 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginTop: spacing.sm,
     textAlign: 'center',
+  },
+  pickupReminderCta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    marginTop: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  pickupReminderCtaText: {
+    flex: 1,
+  },
+  pickupReminderCtaTitle: {
+    fontSize: typography.base,
+    fontWeight: typography.semibold,
+    color: colors.text,
+  },
+  pickupReminderCtaSubtitle: {
+    fontSize: typography.sm,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  pickupModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'flex-end',
+  },
+  pickupModalSheet: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: borderRadius.lg,
+    borderTopRightRadius: borderRadius.lg,
+    paddingTop: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.lg,
+    maxHeight: '80%',
+  },
+  pickupModalHeader: {
+    marginBottom: spacing.md,
+  },
+  pickupModalTitle: {
+    fontSize: typography.xl,
+    fontWeight: typography.bold,
+    color: colors.text,
+  },
+  pickupModalSubtitle: {
+    fontSize: typography.sm,
+    color: colors.textSecondary,
+    marginTop: spacing.xs,
+  },
+  pickupModalList: {
+    flexGrow: 0,
+  },
+  pickupModalListContent: {
+    paddingBottom: spacing.sm,
+  },
+  pickupModalEmpty: {
+    fontSize: typography.base,
+    color: colors.textSecondary,
+    fontStyle: 'italic',
+    paddingVertical: spacing.md,
+  },
+  pickupModalItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.md,
+    borderWidth: 2,
+    borderColor: colors.border,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  pickupModalItemSelected: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primary + '10',
+  },
+  pickupModalItemText: {
+    flex: 1,
+  },
+  pickupModalItemName: {
+    fontSize: typography.base,
+    fontWeight: typography.semibold,
+    color: colors.text,
+  },
+  pickupModalItemStatus: {
+    fontSize: typography.sm,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  pickupModalActions: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  pickupModalCancel: {
+    flex: 1,
+    paddingVertical: spacing.md,
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+  },
+  pickupModalCancelText: {
+    fontSize: typography.base,
+    color: colors.text,
+    fontWeight: typography.semibold,
+  },
+  pickupModalConfirm: {
+    flex: 1.3,
+    flexDirection: 'row',
+    paddingVertical: spacing.md,
+    borderRadius: borderRadius.md,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: spacing.xs,
+  },
+  pickupModalConfirmDisabled: {
+    backgroundColor: colors.textMuted,
+    opacity: 0.7,
+  },
+  pickupModalConfirmText: {
+    fontSize: typography.base,
+    fontWeight: typography.semibold,
+    color: colors.surface,
   },
 });
