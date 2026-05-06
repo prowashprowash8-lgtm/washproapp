@@ -772,23 +772,6 @@ export default function LaundryDetailScreen({ route, navigation }) {
           )}
         </View>
 
-        {availableMachines.length > 0 && (
-          <TouchableOpacity
-            style={styles.pickupReminderCta}
-            onPress={openPickupModal}
-            activeOpacity={0.85}
-          >
-            <MaterialCommunityIcons name="bell-ring-outline" size={22} color={colors.primary} />
-            <View style={styles.pickupReminderCtaText}>
-              <Text style={styles.pickupReminderCtaTitle}>Prévenir un utilisateur</Text>
-              <Text style={styles.pickupReminderCtaSubtitle}>
-                Envoyer une notification pour récupérer le linge
-              </Text>
-            </View>
-            <MaterialCommunityIcons name="chevron-right" size={22} color={colors.textMuted} />
-          </TouchableOpacity>
-        )}
-
         <View style={styles.paySection}>
           {selectedMachineOutOfService ? (
             <View style={styles.offlineBox}>
@@ -816,6 +799,23 @@ export default function LaundryDetailScreen({ route, navigation }) {
             {t('cardOrPromo')}
           </Text>
         </View>
+
+        {availableMachines.length > 0 && (
+          <TouchableOpacity
+            style={styles.pickupReminderCta}
+            onPress={openPickupModal}
+            activeOpacity={0.85}
+          >
+            <MaterialCommunityIcons name="bell-ring-outline" size={22} color={colors.primary} />
+            <View style={styles.pickupReminderCtaText}>
+              <Text style={styles.pickupReminderCtaTitle}>Prévenir un utilisateur</Text>
+              <Text style={styles.pickupReminderCtaSubtitle}>
+                Envoyer une notification pour récupérer le linge
+              </Text>
+            </View>
+            <MaterialCommunityIcons name="chevron-right" size={22} color={colors.textMuted} />
+          </TouchableOpacity>
+        )}
       </ScrollView>
 
       <PaymentModal
