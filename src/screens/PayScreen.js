@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   StyleSheet,
@@ -12,7 +13,7 @@ import { StatusBar } from 'expo-status-bar';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, spacing, borderRadius, typography } from '../theme/colors';
 import Button from '../components/Button';
-import { findEmplacementByName, getMachinesByEmplacement } from '../services/laundryService';
+import { findEmplacementByName, getMachinesByEmplacement, getEmplacementById } from '../services/laundryService';
 import { getSavedLaundry, saveLaundry, clearSavedLaundry } from '../utils/laundryStorage';
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
@@ -26,23 +27,33 @@ export default function PayScreen({ navigation }) {
   const [emplacement, setEmplacement] = useState(null);
   const [machines, setMachines] = useState([]);
   const [error, setError] = useState(null);
-  useEffect(() => {
+  const loadAndRefreshEmplacement = useCallback(async () => {
     if (!user?.id) return;
-    getSavedLaundry(user.id).then(async (saved) => {
-      if (saved?.emplacement) {
-        setEmplacement(saved.emplacement);
-        setEmplacementName(saved.emplacement?.name || saved.emplacement?.nom || '');
-        const empId = saved.emplacement?.id;
-        if (empId) {
-          const { data } = await getMachinesByEmplacement(empId);
-          setMachines(data || []);
-          if (data?.length) await saveLaundry(user.id, saved.emplacement, data);
-        } else {
-          setMachines(saved.machines || []);
-        }
-      }
-    });
+    const saved = await getSavedLaundry(user.id);
+    if (!saved?.emplacement) return;
+    const empId = saved.emplacement?.id;
+    // Rafraîchir l'emplacement depuis la BDD pour avoir le nom à jour
+    let freshEmplacement = saved.emplacement;
+    if (empId) {
+      const { data: fresh } = await getEmplacementById(empId);
+      if (fresh) freshEmplacement = fresh;
+    }
+    setEmplacement(freshEmplacement);
+    setEmplacementName(freshEmplacement?.name || freshEmplacement?.nom || '');
+    if (empId) {
+      const { data } = await getMachinesByEmplacement(empId);
+      setMachines(data || []);
+      await saveLaundry(user.id, freshEmplacement, data || []);
+    } else {
+      setMachines(saved.machines || []);
+    }
   }, [user?.id]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadAndRefreshEmplacement();
+    }, [loadAndRefreshEmplacement])
+  );
 
   const handleAccessMachines = async () => {
     if (!user?.id) return;
@@ -148,7 +159,7 @@ export default function PayScreen({ navigation }) {
               >
                 <View style={styles.resultsHeader}>
                   <Text style={styles.resultsTitle}>
-                    {emplacement.nom || emplacement.name} — {machines.length} {t('machinesCount')}
+                    {emplacement.name || emplacement.nom} — {machines.length} {t('machinesCount')}
                   </Text>
                   <MaterialCommunityIcons name="chevron-right" size={24} color={colors.primary} />
                 </View>

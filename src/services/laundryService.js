@@ -19,6 +19,21 @@ export async function findEmplacementByName(searchTerm) {
 }
 
 /**
+ * Récupère un emplacement par son ID (pour rafraîchir le nom à jour)
+ */
+export async function getEmplacementById(emplacementId) {
+  if (!supabase || !emplacementId) return { data: null, error: null };
+
+  const { data, error } = await supabase
+    .from('emplacements')
+    .select('*')
+    .eq('id', emplacementId)
+    .maybeSingle();
+
+  return { data, error };
+}
+
+/**
  * Récupère les machines d'un emplacement
  */
 export async function getMachinesByEmplacement(emplacementId) {
