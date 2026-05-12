@@ -167,7 +167,10 @@ export default function TransactionScreen() {
   const renderBody = () => {
     const mergedRows = [
       ...(transactions || []).map((tx) => ({ kind: 'machine', created_at: tx.created_at, tx })),
-      ...(walletActivity || []).map((w) => ({ kind: 'wallet', created_at: w.created_at, wallet: w })),
+      // Exclure les débits cycle wallet : déjà représentés par la transaction machine
+      ...(walletActivity || [])
+        .filter((w) => w.activity_kind !== 'wallet_machine_debit')
+        .map((w) => ({ kind: 'wallet', created_at: w.created_at, wallet: w })),
     ].sort((a, b) => {
       const aPinned =
         a.kind === 'machine' &&

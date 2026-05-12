@@ -25,7 +25,7 @@ import { useLaundryTimer } from '../context/LaundryTimerContext';
 import { createTransactionAndStartMachine, createTransactionAndPayWithWallet } from '../services/transactionService';
 import { getWalletBalance } from '../services/walletService';
 import { validateAndUsePromoCode, getUserAvailablePromoCodes } from '../services/promoService';
-import { getMachinesByEmplacement, getMachineAvailabilityState, setMachineAvailableById } from '../services/laundryService';
+import { getMachinesByEmplacement, getMachineAvailabilityState } from '../services/laundryService';
 import { checkEsp32Online, getEsp32IdForMachine } from '../services/esp32Service';
 import { createCheckoutAndPay } from '../services/stripeService';
 import { sendPickupReminder } from '../services/pickupReminderService';
@@ -382,20 +382,6 @@ export default function LaundryDetailScreen({ route, navigation }) {
 
   const selectedMachineBusy = selectedMachineFromList && isStatutOccupe(selectedMachineFromList.statut);
   const selectedMachineOutOfService = isMachineOutOfService(selectedMachineFromList);
-
-  const handleForceAvailable = async () => {
-    if (!selectedMachine?.id) return;
-    const { ok, error } = await setMachineAvailableById(selectedMachine.id);
-    if (!ok) {
-      if (error === 'release_rejected') {
-        showAlert(t('error'), t('machineRemoteUnavailable'), [{ text: t('ok') }]);
-      } else {
-        showAlert(t('error'), error || t('updateError'), [{ text: t('ok') }]);
-      }
-      return;
-    }
-    await refreshMachines();
-  };
 
   const getMachineAmount = () => {
     const m = selectedMachineFromList;
@@ -783,11 +769,6 @@ export default function LaundryDetailScreen({ route, navigation }) {
                 {!espStatusReady ? t('checkingEsp') : t('machineOffline')}
               </Text>
             </View>
-          )}
-          {selectedMachineBusy && selectedEspOnline === true && (
-            <TouchableOpacity style={styles.releaseButton} onPress={handleForceAvailable}>
-              <Text style={styles.releaseButtonText}>{t('machineStoppedRelease')}</Text>
-            </TouchableOpacity>
           )}
           <Button
             title={selectedMachine && getMachineAmount() > 0 ? `${t('paid')} — ${getMachineAmount().toFixed(2)} €` : t('paid')}
