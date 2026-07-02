@@ -1,5 +1,4 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import bcrypt from 'bcryptjs';
 import * as SecureStore from 'expo-secure-store';
 import { supabase, isSupabaseConfigured, getSupabasePublicConfig } from '../lib/supabase';
 import { Platform } from 'react-native';
@@ -87,11 +86,10 @@ export function AuthProvider({ children }) {
   const signIn = async (email, password) => {
     const { data, error } = await supabase.rpc('sign_in', {
       p_email: email.trim(),
+      p_password: password,
     });
     if (error) throw error;
     if (!data) throw new Error('Email ou mot de passe incorrect');
-    const valid = bcrypt.compareSync(password, data.password_hash);
-    if (!valid) throw new Error('Email ou mot de passe incorrect');
     const userData = {
       id: data.id,
       email: data.email,
@@ -107,10 +105,9 @@ export function AuthProvider({ children }) {
   };
 
   const signUp = async (email, password, metadata = {}) => {
-    const passwordHash = bcrypt.hashSync(password, 10);
     const { data, error } = await supabase.rpc('sign_up', {
       p_email: email.trim(),
-      p_password_hash: passwordHash,
+      p_password: password,
       p_first_name: metadata.first_name || '',
       p_last_name: metadata.last_name || '',
       p_phone: metadata.phone || '',
@@ -181,11 +178,10 @@ export function AuthProvider({ children }) {
   };
 
   const resetPasswordWithCode = async (email, code, newPassword) => {
-    const passwordHash = bcrypt.hashSync(newPassword, 10);
     const { data, error } = await supabase.rpc('reset_password_with_code', {
       p_email: email.trim(),
       p_code: code.trim(),
-      p_new_password_hash: passwordHash,
+      p_new_password: newPassword,
     });
     if (error) throw new Error(error.message || 'Erreur');
     if (!data) throw new Error('Code invalide ou expiré');
@@ -226,19 +222,12 @@ export function AuthProvider({ children }) {
 
   const changePassword = async (currentPassword, newPassword) => {
     if (!user?.id || !user?.email) throw new Error('Non connecté');
-    const { data, error } = await supabase.rpc('sign_in', {
-      p_email: user.email.trim(),
-    });
-    if (error) throw error;
-    if (!data?.password_hash) throw new Error('Mot de passe actuel incorrect');
-    const valid = bcrypt.compareSync(currentPassword, data.password_hash);
-    if (!valid) throw new Error('Mot de passe actuel incorrect');
-    const newHash = bcrypt.hashSync(newPassword, 10);
-    const { error: err2 } = await supabase.rpc('update_password_hash', {
+    const { error } = await supabase.rpc('change_password', {
       p_user_id: user.id,
-      p_new_password_hash: newHash,
+      p_current_password: currentPassword,
+      p_new_password: newPassword,
     });
-    if (err2) throw new Error(err2.message || 'Erreur');
+    if (error) throw new Error(error.message || 'Erreur');
   };
 
   const signInWithBiometric = async () => {

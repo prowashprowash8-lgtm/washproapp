@@ -53,6 +53,7 @@ function ProfileStack() {
       <Stack.Screen name="MissionsList" component={MissionsScreen} />
       <Stack.Screen name="MissionDetail" component={MissionDetailScreen} />
       <Stack.Screen name="Aide" component={AideScreen} />
+      <Stack.Screen name="Transaction" component={TransactionScreen} />
     </Stack.Navigator>
   );
 }
