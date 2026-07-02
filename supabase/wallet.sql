@@ -56,8 +56,14 @@ REVOKE ALL ON FUNCTION public.apply_wallet_recharge(uuid, integer, text) FROM PU
 GRANT EXECUTE ON FUNCTION public.apply_wallet_recharge(uuid, integer, text) TO service_role;
 
 -- Paiement machine depuis le solde (client app)
+-- CRITIQUE #6 de l'audit : ancienne version (6 arguments) permettait à quiconque connaissant
+-- l'UUID d'un client de débiter SON portefeuille. Remplacée par la version à 7 arguments
+-- qui exige le session_token.
+DROP FUNCTION IF EXISTS public.create_transaction_and_pay_with_wallet(uuid, uuid, uuid, text, numeric, integer);
+
 CREATE OR REPLACE FUNCTION public.create_transaction_and_pay_with_wallet(
   p_user_id uuid,
+  p_session_token uuid,
   p_machine_id uuid,
   p_emplacement_id uuid,
   p_esp32_id text,
@@ -74,8 +80,8 @@ DECLARE
   v_transaction_id uuid;
   v_command_id uuid;
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = p_user_id) THEN
-    RETURN json_build_object('success', false, 'error', 'invalid_user');
+  IF NOT EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = p_user_id AND p.session_token = p_session_token) THEN
+    RETURN json_build_object('success', false, 'error', 'unauthorized');
   END IF;
 
   IF NOT EXISTS (
@@ -137,16 +143,20 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.create_transaction_and_pay_with_wallet(uuid, uuid, uuid, text, numeric, integer) TO anon;
+GRANT EXECUTE ON FUNCTION public.create_transaction_and_pay_with_wallet(uuid, uuid, uuid, uuid, text, numeric, integer) TO anon;
 
-CREATE OR REPLACE FUNCTION public.get_wallet_balance(p_user_id uuid)
+-- CRITIQUE #6 de l'audit : ancienne version (1 argument) lisible par n'importe qui
+-- connaissant un UUID. Remplacée par la version à 2 arguments qui exige le session_token.
+DROP FUNCTION IF EXISTS public.get_wallet_balance(uuid);
+
+CREATE OR REPLACE FUNCTION public.get_wallet_balance(p_user_id uuid, p_session_token uuid)
 RETURNS integer
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT coalesce(wallet_balance, 0) FROM public.profiles WHERE id = p_user_id;
+  SELECT coalesce(wallet_balance, 0) FROM public.profiles WHERE id = p_user_id AND session_token = p_session_token;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_wallet_balance(uuid) TO anon;
+GRANT EXECUTE ON FUNCTION public.get_wallet_balance(uuid, uuid) TO anon;

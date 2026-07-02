@@ -22,14 +22,14 @@ create trigger esp32_heartbeat_touch
   before insert or update on public.esp32_heartbeat
   for each row execute function public.esp32_heartbeat_set_last_seen();
 
--- 3. RLS : l'ESP32 (anon) peut insérer/mettre à jour
+-- 3. RLS : aucun accès direct pour anon/authenticated (corrigé le 2026-07-02 — cette table
+-- contient désormais device_secret, CRITIQUE #14). L'ESP32 écrit via register_esp32_heartbeat
+-- et la lecture "en ligne ?" passe par check_esp32_online — les deux sont SECURITY DEFINER et
+-- contournent RLS, donc aucune policy anon n'est nécessaire ici.
 alter table public.esp32_heartbeat enable row level security;
 
 drop policy if exists "ESP32 upsert heartbeat" on public.esp32_heartbeat;
-create policy "ESP32 upsert heartbeat"
-  on public.esp32_heartbeat for all
-  using (true)
-  with check (true);
+revoke all on public.esp32_heartbeat from anon, authenticated, public;
 
 -- 4. RPC : vérifier si l'ESP32 est en ligne (pollé dans les 45 dernières secondes)
 create or replace function public.check_esp32_online(p_esp32_id text)

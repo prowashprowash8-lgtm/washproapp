@@ -170,10 +170,10 @@ export default function LaundryDetailScreen({ route, navigation }) {
       setWalletBalanceCentimes(null);
       return Promise.resolve();
     }
-    return getWalletBalance(user.id).then(({ balanceCentimes }) => {
+    return getWalletBalance(user.id, user.session_token).then(({ balanceCentimes }) => {
       setWalletBalanceCentimes(balanceCentimes);
     });
-  }, [user?.id]);
+  }, [user?.id, user?.session_token]);
 
   const openPickupModal = useCallback(() => {
     setPickupTargetMachineId(null);
@@ -230,13 +230,13 @@ export default function LaundryDetailScreen({ route, navigation }) {
   useEffect(() => {
     if (!paymentModalVisible || !user?.id || !isSupabaseConfigured()) return;
     let cancelled = false;
-    getWalletBalance(user.id).then(({ balanceCentimes }) => {
+    getWalletBalance(user.id, user.session_token).then(({ balanceCentimes }) => {
       if (!cancelled) setWalletBalanceCentimes(balanceCentimes);
     });
     return () => {
       cancelled = true;
     };
-  }, [paymentModalVisible, user?.id]);
+  }, [paymentModalVisible, user?.id, user?.session_token]);
 
   useEffect(() => {
     if (!paymentModalVisible || !user?.id || !isSupabaseConfigured()) {
@@ -244,13 +244,13 @@ export default function LaundryDetailScreen({ route, navigation }) {
       return;
     }
     let cancelled = false;
-    getUserAvailablePromoCodes(user.id).then(({ data }) => {
+    getUserAvailablePromoCodes(user.id, user.session_token).then(({ data }) => {
       if (!cancelled) setAvailablePromoCodes(Array.isArray(data) ? data : []);
     });
     return () => {
       cancelled = true;
     };
-  }, [paymentModalVisible, user?.id]);
+  }, [paymentModalVisible, user?.id, user?.session_token]);
 
   // Retour sur l'écran : machines + solde portefeuille
   useFocusEffect(
@@ -490,6 +490,7 @@ export default function LaundryDetailScreen({ route, navigation }) {
 
     const { success, error } = await createTransactionAndPayWithWallet({
       userId: user.id,
+      sessionToken: user.session_token,
       machineId,
       emplacementId,
       esp32Id,
@@ -595,6 +596,7 @@ export default function LaundryDetailScreen({ route, navigation }) {
 
     const { success, error } = await createTransactionAndStartMachine({
       userId: user.id,
+      sessionToken: user.session_token,
       machineId,
       emplacementId,
       esp32Id,

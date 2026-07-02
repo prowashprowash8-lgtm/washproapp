@@ -6,6 +6,7 @@
  * - Optocoupleur → report_machine_run_state (p_running) + secours set_machine_available_by_esp_relay à l’arrêt
  *
  * Supabase : déployer esp32-optocoupler-machine-state-auto-fix.sql + machine-commands-claim-start.sql
+ *            + esp32-provisioning.sql (génère le DEVICE_SECRET de chaque boîtier)
  */
 
 #include <WiFi.h>
@@ -22,7 +23,17 @@ const char* SUPABASE_URL = "https://ftechtqyocgdabfkmclm.supabase.co";
 const char* SUPABASE_ANON =
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ0ZWNodHF5b2NnZGFiZmttY2xtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3ODIwNjIsImV4cCI6MjA4ODM1ODA2Mn0.JJ3XgrH5u1nfUH9HADiEAd_KOfcDyNQHt_D_MykS3k4";
 
+/** CRITIQUE #14 de l'audit : secret unique par boîtier, généré côté serveur et stocké dans
+ * esp32_heartbeat.device_secret. Sans lui, claim_pending_start_command refuse la commande —
+ * empêche quelqu'un de deviner ESP32_ID (WASH_PRO_002, _003...) et de "consommer" à distance
+ * des commandes de démarrage déjà payées sans avoir de machine physique.
+ * Ne JAMAIS réutiliser la même valeur sur deux boîtiers.
+ *
+ * Pour un NOUVEL ESP32 : dans Supabase → SQL Editor, exécuter
+ *   select public.provision_esp32_device('WASH_PRO_00X');
+ * Le résultat donne directement les deux lignes ESP32_ID / DEVICE_SECRET à coller ici. */
 const char* ESP32_ID = "WASH_PRO_001";
+const char* DEVICE_SECRET = "360d139c519f55ac4ed39fe19ad88789108a436bad51f826";
 const int MACHINE_RELAY_ID = 1;
 
 /** Optionnel : UUID Supabase de la ligne machines (32+ car.) pour PATCH / RPC secours si besoin */
@@ -145,7 +156,7 @@ bool claimStartCommand(String& outUuid) {
   http.begin(String(SUPABASE_URL) + "/rest/v1/rpc/claim_pending_start_command");
   http.setTimeout(8000);
   addHeaders(http);
-  int code = http.POST("{\"p_esp32_id\":\"" + String(ESP32_ID) + "\"}");
+  int code = http.POST("{\"p_esp32_id\":\"" + String(ESP32_ID) + "\",\"p_device_secret\":\"" + String(DEVICE_SECRET) + "\"}");
   String payload = http.getString();
   http.end();
   if (code != 200) {

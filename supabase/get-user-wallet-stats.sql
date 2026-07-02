@@ -2,6 +2,9 @@
 -- Exécuter dans Supabase → SQL Editor (remplace la version précédente)
 -- OBLIGATOIRE : si l’ancienne version avait 2 colonnes, le type de retour change → DROP avant CREATE.
 
+-- CRITIQUE #6 de l'audit : cette fonction n'est utilisée QUE par le dashboard board
+-- (washprobox-board/src/pages/ProfileDetail.tsx), jamais par l'app mobile. Elle doit donc
+-- être réservée au staff (rôle patron), pas ouverte à anon avec un simple p_user_id.
 DROP FUNCTION IF EXISTS public.get_user_wallet_stats(uuid);
 
 CREATE OR REPLACE FUNCTION public.get_user_wallet_stats(p_user_id uuid)
@@ -16,7 +19,7 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
   SELECT
-    coalesce((SELECT p.wallet_balance FROM public.profiles p WHERE p.id = p_user_id), 0)::integer,
+    coalesce(p.wallet_balance, 0)::integer,
     coalesce(
       (
         SELECT sum(wt.amount_centimes)::bigint
@@ -34,9 +37,15 @@ AS $$
           AND wt.type = 'refund'
       ),
       0::bigint
+    )
+  FROM public.profiles p
+  WHERE p.id = p_user_id
+    AND EXISTS (
+      SELECT 1 FROM public.board_account_roles bar
+      WHERE bar.user_id = auth.uid() AND bar.role = 'patron'
     );
 $$;
 
 REVOKE ALL ON FUNCTION public.get_user_wallet_stats(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.get_user_wallet_stats(uuid) TO anon;
+REVOKE EXECUTE ON FUNCTION public.get_user_wallet_stats(uuid) FROM anon;
 GRANT EXECUTE ON FUNCTION public.get_user_wallet_stats(uuid) TO authenticated;

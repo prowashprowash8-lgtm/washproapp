@@ -58,8 +58,14 @@ create policy "transactions_authenticated_update"
   with check (true);
 
 -- 4. RPC : créer une transaction + envoyer la commande machine (tout en un)
+-- CRITIQUE #6 de l'audit : ancienne version (7 arguments) permettait d'attribuer une
+-- transaction/un démarrage machine au compte de n'importe qui connaissant son UUID.
+-- Remplacée par la version à 8 arguments qui exige le session_token.
+drop function if exists public.create_transaction_and_start_machine(uuid, uuid, uuid, text, decimal, text, text);
+
 create or replace function public.create_transaction_and_start_machine(
   p_user_id uuid,
+  p_session_token uuid,
   p_machine_id uuid,
   p_emplacement_id uuid,
   p_esp32_id text,
@@ -76,8 +82,8 @@ declare
   v_transaction_id uuid;
   v_command_id uuid;
 begin
-  if not exists (select 1 from public.profiles p where p.id = p_user_id) then
-    raise exception 'invalid_user';
+  if not exists (select 1 from public.profiles p where p.id = p_user_id and p.session_token = p_session_token) then
+    raise exception 'unauthorized';
   end if;
 
   if not exists (
@@ -124,7 +130,7 @@ begin
 end;
 $$;
 
-grant execute on function public.create_transaction_and_start_machine(uuid, uuid, uuid, text, decimal, text, text) to anon;
+grant execute on function public.create_transaction_and_start_machine(uuid, uuid, uuid, uuid, text, decimal, text, text) to anon;
 
 -- 5. RPC : rembourser une transaction (depuis le dashboard Supabase ou une future interface admin)
 create or replace function public.refund_transaction(
@@ -150,43 +156,8 @@ $$;
 revoke all on function public.refund_transaction(uuid, text) from public;
 grant execute on function public.refund_transaction(uuid, text) to service_role;
 
--- 6. RPC : récupérer les transactions d'un utilisateur avec noms machine/emplacement
-create or replace function public.get_user_transactions(p_user_id uuid)
-returns table (
-  id uuid,
-  amount decimal,
-  payment_method text,
-  promo_code text,
-  status text,
-  created_at timestamptz,
-  refunded_at timestamptz,
-  refund_reason text,
-  machine_name text,
-  emplacement_name text
-)
-language plpgsql
-security definer
-set search_path = public
-as $$
-begin
-  return query
-  select
-    t.id,
-    t.amount,
-    t.payment_method,
-    t.promo_code,
-    t.status,
-    t.created_at,
-    t.refunded_at,
-    t.refund_reason,
-    m.name as machine_name,
-    coalesce(e.name, e.nom) as emplacement_name
-  from transactions t
-  join machines m on m.id = t.machine_id
-  join emplacements e on e.id = t.emplacement_id
-  where t.user_id = p_user_id
-  order by t.created_at desc;
-end;
-$$;
-
-grant execute on function public.get_user_transactions(uuid) to anon;
+-- 6. RPC get_user_transactions : NE PAS REJOUER la version ci-dessous (retirée).
+-- Elle prenait un seul argument (p_user_id) sans session_token — CRITIQUE #6 de l'audit.
+-- La version à jour (2 arguments, avec vérification du session_token) vit désormais dans
+-- refund-request-response-and-promo.sql. La rejouer ici recréerait l'ancienne faille en
+-- tant que second overload accessible à anon.

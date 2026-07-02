@@ -170,11 +170,26 @@ Deno.serve(async (req) => {
       ? `${supabaseOrigin}/functions/v1/payment-success`
       : 'https://washproapp.com/success';
 
-    const amountCents = Math.round(Number(amount) * 100) || 100;
     const isWallet = String(checkout_kind || '').trim() === 'wallet_recharge';
     const uid = String(user_id || '').trim();
     if (isWallet && uid.length < 10) {
       return jsonResponse({ error: 'user_id requis pour la recharge portefeuille' }, 400);
+    }
+
+    // CRITIQUE #3 de l'audit : ne jamais faire confiance à `amount` envoyé par le client.
+    // - Recharge portefeuille : whitelist stricte (alignée sur RECHARGE_AMOUNTS de WalletScreen.js).
+    // - Paiement machine : prix recalculé côté serveur depuis la table `machines`.
+    let amountCents: number;
+
+    if (isWallet) {
+      const ALLOWED_RECHARGE_CENTS = [1000, 2000, 5000];
+      const requested = Math.round(Number(amount) * 100);
+      if (!ALLOWED_RECHARGE_CENTS.includes(requested)) {
+        return jsonResponse({ error: 'invalid_recharge_amount' }, 400);
+      }
+      amountCents = requested;
+    } else {
+      amountCents = 0; // calculé plus bas une fois la machine chargée
     }
 
     const productName = isWallet
@@ -217,7 +232,7 @@ Deno.serve(async (req) => {
       }
       const { data: machineRow, error: machineErr } = await admin
         .from('machines')
-        .select('hors_service')
+        .select('hors_service, prix_centimes, price, price_per_hour, machine_kind, type')
         .eq('id', machineIdValue)
         .maybeSingle();
       if (machineErr) {
@@ -229,6 +244,34 @@ Deno.serve(async (req) => {
       if (machineRow.hors_service === true) {
         return jsonResponse({ error: 'machine_out_of_service' }, 409);
       }
+
+      // Même logique que getMachineKind()/isDryerMachine() côté app (src/utils/machineKind.js) :
+      // machine_kind fait foi, sinon déduction depuis `type`.
+      const kindRaw = String(machineRow.machine_kind || '').toLowerCase().trim();
+      const typeRaw = String(machineRow.type || '').toLowerCase();
+      const isDryer =
+        kindRaw === 'sechage' ||
+        (kindRaw !== 'lavage' &&
+          (typeRaw.includes('sechage') ||
+            typeRaw.includes('dryer') ||
+            typeRaw.includes('sèche') ||
+            typeRaw.includes('seche')));
+
+      // Même priorité que getMachineAmount() côté app (LaundryDetailScreen.js) :
+      // 1) sèche-linge avec price_per_hour, 2) prix_centimes (board), 3) price (legacy).
+      let amountEuros: number;
+      if (isDryer && machineRow.price_per_hour) {
+        amountEuros = Number(machineRow.price_per_hour);
+      } else if (machineRow.prix_centimes != null) {
+        amountEuros = Number(machineRow.prix_centimes) / 100;
+      } else {
+        amountEuros = Number(machineRow.price) || 0;
+      }
+
+      if (!(amountEuros > 0)) {
+        return jsonResponse({ error: 'machine_price_not_set' }, 409);
+      }
+      amountCents = Math.round(amountEuros * 100);
     }
 
     const url = await createCheckoutSessionFetch({

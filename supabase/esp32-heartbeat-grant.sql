@@ -1,4 +1,10 @@
--- Permettre à l'app de lire esp32_heartbeat (pour isOnline)
--- Exécuter dans Supabase → SQL Editor
-
-GRANT SELECT ON public.esp32_heartbeat TO anon;
+-- NE PAS REJOUER ce fichier : le GRANT SELECT ci-dessous a été retiré le 2026-07-02.
+--
+-- Trouvé par une revue de sécurité post-changements : il rendait la colonne
+-- esp32_heartbeat.device_secret (ajoutée le même jour pour corriger CRITIQUE #14) lisible
+-- par n'importe qui avec la clé anon publique — ce qui annulait complètement ce correctif.
+-- L'app utilise déjà la RPC check_esp32_online (voir src/services/esp32Service.js, qui dit
+-- explicitement "évite les problèmes de permissions sur la table") — cet accès direct était
+-- un résidu inutile, confirmé par une recherche exhaustive dans l'app et le dashboard.
+--
+-- GRANT SELECT ON public.esp32_heartbeat TO anon;  -- SUPPRIMÉ, ne pas réactiver.

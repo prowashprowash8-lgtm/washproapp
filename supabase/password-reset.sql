@@ -50,16 +50,21 @@ $$;
 revoke all on function public.password_reset_issue_code(text) from public;
 grant execute on function public.password_reset_issue_code(text) to service_role;
 
--- RPC : réinitialiser le mot de passe avec le code (inchangé pour l’app)
+-- RPC : réinitialiser le mot de passe avec le code — SEULE définition valable.
+-- Ne pas redéfinir cette fonction ailleurs (ex: profiles-auth.sql) : toute redéfinition
+-- avec la même signature (text, text, text) écrase celle-ci silencieusement dans Supabase.
+-- drop nécessaire : Postgres refuse de renommer un paramètre via create or replace.
+drop function if exists public.reset_password_with_code(text, text, text);
+
 create or replace function public.reset_password_with_code(
   p_email text,
   p_code text,
-  p_new_password_hash text
+  p_new_password text
 )
 returns boolean
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   v_row record;
@@ -76,8 +81,10 @@ begin
     return false;
   end if;
 
+  -- Fait tourner session_token : un jeton fuité devient inutile après un reset de mot de passe.
   update profiles
-  set password_hash = p_new_password_hash
+  set password_hash = crypt(p_new_password, gen_salt('bf')),
+      session_token = gen_random_uuid()
   where lower(trim(email)) = lower(trim(p_email));
 
   delete from password_reset_codes where id = v_row.id;

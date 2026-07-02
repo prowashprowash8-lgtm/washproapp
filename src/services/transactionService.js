@@ -93,6 +93,7 @@ async function enrichRefundStatusFallback(rows) {
  */
 export async function createTransactionAndStartMachine({
   userId,
+  sessionToken,
   machineId,
   emplacementId,
   esp32Id,
@@ -107,6 +108,7 @@ export async function createTransactionAndStartMachine({
 
   const { data, error } = await supabase.rpc('create_transaction_and_start_machine', {
     p_user_id: userId,
+    p_session_token: sessionToken,
     p_machine_id: machineId,
     p_emplacement_id: emplacementId,
     p_esp32_id: normalizedEsp32Id,
@@ -128,6 +130,7 @@ export async function createTransactionAndStartMachine({
  */
 export async function createTransactionAndPayWithWallet({
   userId,
+  sessionToken,
   machineId,
   emplacementId,
   esp32Id,
@@ -141,6 +144,7 @@ export async function createTransactionAndPayWithWallet({
 
   const { data, error } = await supabase.rpc('create_transaction_and_pay_with_wallet', {
     p_user_id: userId,
+    p_session_token: sessionToken,
     p_machine_id: machineId,
     p_emplacement_id: emplacementId,
     p_esp32_id: normalizedEsp32Id,
@@ -183,11 +187,12 @@ export async function setTransactionDuration(transactionId, minutes) {
 /**
  * Récupère les transactions d'un utilisateur (avec noms machine et emplacement)
  */
-export async function getUserTransactions(userId) {
+export async function getUserTransactions(userId, sessionToken) {
   if (!supabase || !userId) return { data: [], error: null };
 
   const { data, error } = await supabase.rpc('get_user_transactions', {
     p_user_id: userId,
+    p_session_token: sessionToken,
   });
 
   if (error) return { data: data || [], error };

@@ -2,9 +2,13 @@
 -- Exécuter dans Supabase → SQL Editor (après profiles-auth / profiles-ensure)
 
 drop function if exists public.update_profile(uuid, text, text);
+-- CRITIQUE #5 de l'audit : ancienne version (5 arguments) modifiable par n'importe qui
+-- connaissant un UUID. Remplacée par la version à 6 arguments qui exige le session_token.
+drop function if exists public.update_profile(uuid, text, text, text, text);
 
 create or replace function public.update_profile(
   p_user_id uuid,
+  p_session_token uuid,
   p_first_name text,
   p_last_name text,
   p_email text,
@@ -16,7 +20,7 @@ security definer
 set search_path = public
 as $$
 begin
-  if not exists (select 1 from profiles where id = p_user_id) then
+  if not exists (select 1 from profiles where id = p_user_id and session_token = p_session_token) then
     return null;
   end if;
 
@@ -54,23 +58,10 @@ begin
 end;
 $$;
 
-grant execute on function public.update_profile(uuid, text, text, text, text) to anon;
+grant execute on function public.update_profile(uuid, uuid, text, text, text, text) to anon;
 
-create or replace function public.update_password_hash(
-  p_user_id uuid,
-  p_new_password_hash text
-)
-returns boolean
-language plpgsql
-security definer
-set search_path = public
-as $$
-begin
-  update profiles
-  set password_hash = p_new_password_hash
-  where id = p_user_id;
-  return found;
-end;
-$$;
-
-grant execute on function public.update_password_hash(uuid, text) to anon;
+-- update_password_hash a été retiré (CRITIQUE #1 de l'audit : accessible à anon sans
+-- vérifier le mot de passe actuel). Remplacé par change_password (profiles-auth.sql),
+-- qui exige le mot de passe actuel avant tout changement. Rien dans l'app ne l'appelle plus.
+revoke all on function public.update_password_hash(uuid, text) from public, anon, authenticated;
+drop function if exists public.update_password_hash(uuid, text);

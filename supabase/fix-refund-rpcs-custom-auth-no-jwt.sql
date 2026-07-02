@@ -50,31 +50,7 @@ REVOKE ALL ON FUNCTION public.mark_refund_responses_seen(uuid) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.mark_refund_responses_seen(uuid) TO anon;
 GRANT EXECUTE ON FUNCTION public.mark_refund_responses_seen(uuid) TO authenticated;
 
-CREATE OR REPLACE FUNCTION public.get_user_available_promo_codes(p_user_id uuid)
-RETURNS TABLE (
-  code text,
-  uses_remaining integer
-)
-LANGUAGE plpgsql
-SECURITY DEFINER
-STABLE
-SET search_path = public
-AS $$
-BEGIN
-  RETURN QUERY
-  SELECT DISTINCT
-    pc.code,
-    COALESCE(pc.uses_remaining, 0)::integer
-  FROM public.refund_requests rr
-  INNER JOIN public.promo_codes pc
-    ON upper(trim(pc.code)) = upper(trim(rr.compensation_promo_code))
-  WHERE rr.user_id = p_user_id
-    AND rr.statut = 'approved'
-    AND rr.compensation_promo_code IS NOT NULL
-    AND COALESCE(pc.uses_remaining, 0) > 0;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION public.get_user_available_promo_codes(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.get_user_available_promo_codes(uuid) TO anon;
-GRANT EXECUTE ON FUNCTION public.get_user_available_promo_codes(uuid) TO authenticated;
+-- NE PAS REJOUER la définition de get_user_available_promo_codes ci-dessous (version à
+-- 1 argument, encore plus ancienne, sans session_token ni applies_to) : CRITIQUE #6 de
+-- l'audit. La version à jour (2 arguments) vit désormais dans
+-- refund-request-response-and-promo.sql.

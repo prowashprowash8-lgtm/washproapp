@@ -48,7 +48,6 @@ export function AuthProvider({ children }) {
       if (storedUser?.id) {
         await migrateLegacyForUser(storedUser.id);
       }
-      if (storedUser) setUser(storedUser);
       setLoading(false);
     });
   }, []);
@@ -93,6 +92,7 @@ export function AuthProvider({ children }) {
     const userData = {
       id: data.id,
       email: data.email,
+      session_token: data.session_token,
       user_metadata: {
         first_name: data.first_name,
         last_name: data.last_name,
@@ -118,6 +118,7 @@ export function AuthProvider({ children }) {
     const userData = {
       id: data.id,
       email: data.email,
+      session_token: data.session_token,
       user_metadata: {
         first_name: data.first_name,
         last_name: data.last_name,
@@ -192,6 +193,7 @@ export function AuthProvider({ children }) {
     if (!user?.id) throw new Error('Non connecté');
     const { data, error } = await supabase.rpc('update_profile', {
       p_user_id: user.id,
+      p_session_token: user.session_token,
       p_first_name: first_name ?? user?.user_metadata?.first_name ?? '',
       p_last_name: last_name ?? user?.user_metadata?.last_name ?? '',
       p_email: (email ?? user.email ?? '').trim(),
@@ -222,12 +224,18 @@ export function AuthProvider({ children }) {
 
   const changePassword = async (currentPassword, newPassword) => {
     if (!user?.id || !user?.email) throw new Error('Non connecté');
-    const { error } = await supabase.rpc('change_password', {
+    const { data, error } = await supabase.rpc('change_password', {
       p_user_id: user.id,
+      p_session_token: user.session_token,
       p_current_password: currentPassword,
       p_new_password: newPassword,
     });
     if (error) throw new Error(error.message || 'Erreur');
+    if (!data?.success) {
+      throw new Error(data?.error === 'unauthorized' ? 'Session expirée, reconnecte-toi' : 'Mot de passe actuel incorrect');
+    }
+    // Le mot de passe change fait tourner le session_token côté serveur : on met à jour la copie locale.
+    await persistUser({ ...user, session_token: data.session_token });
   };
 
   const signInWithBiometric = async () => {

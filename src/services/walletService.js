@@ -6,14 +6,16 @@ import { supabase } from '../lib/supabase';
 
 /**
  * @param {string} userId
+ * @param {string} sessionToken - jeton renvoyé par sign_in/sign_up (user.session_token)
  * @returns {Promise<{ balanceCentimes: number, error: Error | null }>}
  */
-export async function getWalletBalance(userId) {
+export async function getWalletBalance(userId, sessionToken) {
   if (!supabase || !userId) {
     return { balanceCentimes: 0, error: null };
   }
   const { data, error } = await supabase.rpc('get_wallet_balance', {
     p_user_id: userId,
+    p_session_token: sessionToken,
   });
   if (error) {
     return { balanceCentimes: 0, error };
@@ -24,14 +26,16 @@ export async function getWalletBalance(userId) {
 /**
  * Mouvements portefeuille (recharges, remboursements Stripe, débits cycle) — RPC get_user_wallet_activity
  * @param {string} userId
+ * @param {string} sessionToken - jeton renvoyé par sign_in/sign_up (user.session_token)
  * @returns {Promise<{ lines: Array<{ id: string, activity_kind: string, amount_centimes: number, created_at: string, ref_hint?: string }>, error: Error | null }>}
  */
-export async function getWalletActivity(userId) {
+export async function getWalletActivity(userId, sessionToken) {
   if (!supabase || !userId) {
     return { lines: [], error: null };
   }
   const { data, error } = await supabase.rpc('get_user_wallet_activity', {
     p_user_id: userId,
+    p_session_token: sessionToken,
   });
   if (error) {
     return { lines: [], error };

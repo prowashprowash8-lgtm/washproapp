@@ -111,8 +111,8 @@ export default function TransactionScreen() {
     else setRefreshing(true);
     setError(null);
     const [{ data, error: err }, { lines, error: walletErr }] = await Promise.all([
-      getUserTransactions(user.id),
-      getWalletActivity(user.id),
+      getUserTransactions(user.id, user.session_token),
+      getWalletActivity(user.id, user.session_token),
     ]);
     setTransactions(data || []);
     setWalletActivity(lines || []);

@@ -7,9 +7,11 @@ ALTER TABLE public.wallet_transactions
 ALTER TABLE public.wallet_transactions
   ADD COLUMN IF NOT EXISTS stripe_payment_intent_id text;
 
+-- CRITIQUE #6 de l'audit : ancienne version (1 argument) lisible par n'importe qui
+-- connaissant un UUID. Remplacée par la version à 2 arguments qui exige le session_token.
 DROP FUNCTION IF EXISTS public.get_user_wallet_activity(uuid);
 
-CREATE OR REPLACE FUNCTION public.get_user_wallet_activity(p_user_id uuid)
+CREATE OR REPLACE FUNCTION public.get_user_wallet_activity(p_user_id uuid, p_session_token uuid)
 RETURNS TABLE (
   id uuid,
   activity_kind text,
@@ -45,9 +47,13 @@ AS $$
     ) AS ref_hint
   FROM public.wallet_transactions wt
   WHERE wt.user_id = p_user_id
+    AND EXISTS (
+      SELECT 1 FROM public.profiles p
+      WHERE p.id = p_user_id AND p.session_token = p_session_token
+    )
   ORDER BY wt.created_at DESC;
 $$;
 
-REVOKE ALL ON FUNCTION public.get_user_wallet_activity(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.get_user_wallet_activity(uuid) TO anon;
-GRANT EXECUTE ON FUNCTION public.get_user_wallet_activity(uuid) TO authenticated;
+REVOKE ALL ON FUNCTION public.get_user_wallet_activity(uuid, uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_user_wallet_activity(uuid, uuid) TO anon;
+GRANT EXECUTE ON FUNCTION public.get_user_wallet_activity(uuid, uuid) TO authenticated;

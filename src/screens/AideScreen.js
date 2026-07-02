@@ -43,11 +43,11 @@ export default function AideScreen({ navigation }) {
   useEffect(() => {
     if (!user?.id) return;
     setTxLoading(true);
-    getUserTransactions(user.id).then(({ data }) => {
+    getUserTransactions(user.id, user.session_token).then(({ data }) => {
       setTransactions(data || []);
       setTxLoading(false);
     });
-  }, [user?.id]);
+  }, [user?.id, user?.session_token]);
 
   // Réinitialiser si on change de transaction
   useEffect(() => {
