@@ -17,15 +17,20 @@ const storage = Platform.OS === 'web'
   : AsyncStorage;
 
 // Créer le client uniquement si configuré (évite les erreurs avec URL vide)
-// Migration #2 (audit) : persistSession/autoRefreshToken volontairement à false — l'app
-// gère elle-même la persistance (son propre refresh_token en SecureStore/AsyncStorage) pour
-// ne jamais restaurer de session silencieusement au démarrage à froid (voir AuthContext.js).
+// Migration #2 (audit) : persistSession volontairement à false — l'app gère elle-même la
+// persistance (son propre refresh_token en SecureStore/AsyncStorage) pour ne jamais
+// restaurer de session silencieusement au démarrage à froid (voir AuthContext.js) : au
+// démarrage, rien n'est restauré, donc rien à auto-rafraîchir.
+// autoRefreshToken reste à true (indépendant de persistSession) : une fois une session
+// établie via signIn/signUp/Face ID, elle doit rester valide tant que l'app reste ouverte —
+// sans ça, le jeton d'accès expire (~1h) et toutes les RPC auth.uid() échouent en silence
+// ("Profil introuvable") sans que l'utilisateur soit déconnecté visuellement.
 let supabaseClient = null;
 if (supabaseUrl && supabaseAnonKey) {
   supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
       storage,
-      autoRefreshToken: false,
+      autoRefreshToken: true,
       persistSession: false,
       detectSessionInUrl: false,
     },
