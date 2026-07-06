@@ -43,11 +43,11 @@ export default function AideScreen({ navigation }) {
   useEffect(() => {
     if (!user?.id) return;
     setTxLoading(true);
-    getUserTransactions(user.id, user.session_token).then(({ data }) => {
+    getUserTransactions().then(({ data }) => {
       setTransactions(data || []);
       setTxLoading(false);
     });
-  }, [user?.id, user?.session_token]);
+  }, [user?.id]);
 
   // Réinitialiser si on change de transaction
   useEffect(() => {
@@ -60,7 +60,6 @@ export default function AideScreen({ navigation }) {
     setSending(true);
     const { data, error } = await supabase.rpc('create_refund_request', {
       p_transaction_id: selectedTx.id,
-      p_user_id: user.id,
       p_motif: motif.trim(),
     });
     setSending(false);

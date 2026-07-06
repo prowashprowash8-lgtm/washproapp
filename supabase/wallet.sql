@@ -56,14 +56,13 @@ REVOKE ALL ON FUNCTION public.apply_wallet_recharge(uuid, integer, text) FROM PU
 GRANT EXECUTE ON FUNCTION public.apply_wallet_recharge(uuid, integer, text) TO service_role;
 
 -- Paiement machine depuis le solde (client app)
--- CRITIQUE #6 de l'audit : ancienne version (6 arguments) permettait à quiconque connaissant
--- l'UUID d'un client de débiter SON portefeuille. Remplacée par la version à 7 arguments
--- qui exige le session_token.
+-- Migration #2 de l'audit (2026-07-06) : identité tirée de auth.uid() (vraie session
+-- Supabase Auth) au lieu d'un p_user_id/p_session_token fournis par le client. Anciennes
+-- versions (6, 7 arguments) supprimées.
 DROP FUNCTION IF EXISTS public.create_transaction_and_pay_with_wallet(uuid, uuid, uuid, text, numeric, integer);
+DROP FUNCTION IF EXISTS public.create_transaction_and_pay_with_wallet(uuid, uuid, uuid, uuid, text, numeric, integer);
 
 CREATE OR REPLACE FUNCTION public.create_transaction_and_pay_with_wallet(
-  p_user_id uuid,
-  p_session_token uuid,
   p_machine_id uuid,
   p_emplacement_id uuid,
   p_esp32_id text,
@@ -76,11 +75,12 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
+  v_uid uuid := auth.uid();
   v_row integer;
   v_transaction_id uuid;
   v_command_id uuid;
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = p_user_id AND p.session_token = p_session_token) THEN
+  IF v_uid IS NULL THEN
     RETURN json_build_object('success', false, 'error', 'unauthorized');
   END IF;
 
@@ -108,7 +108,7 @@ BEGIN
 
   UPDATE public.profiles
   SET wallet_balance = wallet_balance - p_price_centimes
-  WHERE id = p_user_id
+  WHERE id = v_uid
     AND coalesce(wallet_balance, 0) >= p_price_centimes;
 
   GET DIAGNOSTICS v_row = ROW_COUNT;
@@ -117,14 +117,14 @@ BEGIN
   END IF;
 
   INSERT INTO public.wallet_transactions (user_id, amount_centimes, type, machine_id)
-  VALUES (p_user_id, p_price_centimes, 'machine_debit', p_machine_id);
+  VALUES (v_uid, p_price_centimes, 'machine_debit', p_machine_id);
 
   INSERT INTO public.transactions (user_id, machine_id, emplacement_id, amount, payment_method, promo_code, status)
-  VALUES (p_user_id, p_machine_id, p_emplacement_id, p_amount, 'wallet', null, 'completed')
+  VALUES (v_uid, p_machine_id, p_emplacement_id, p_amount, 'wallet', null, 'completed')
   RETURNING id INTO v_transaction_id;
 
   INSERT INTO public.machine_commands (esp32_id, command, status, user_id, transaction_id)
-  VALUES (p_esp32_id, 'START', 'pending', p_user_id, v_transaction_id)
+  VALUES (p_esp32_id, 'START', 'pending', v_uid, v_transaction_id)
   RETURNING id INTO v_command_id;
 
   UPDATE public.transactions SET machine_command_id = v_command_id WHERE id = v_transaction_id;
@@ -143,20 +143,23 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.create_transaction_and_pay_with_wallet(uuid, uuid, uuid, uuid, text, numeric, integer) TO anon;
+REVOKE ALL ON FUNCTION public.create_transaction_and_pay_with_wallet(uuid, uuid, text, numeric, integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.create_transaction_and_pay_with_wallet(uuid, uuid, text, numeric, integer) TO authenticated;
 
--- CRITIQUE #6 de l'audit : ancienne version (1 argument) lisible par n'importe qui
--- connaissant un UUID. Remplacée par la version à 2 arguments qui exige le session_token.
+-- Migration #2 de l'audit (2026-07-06) : identité tirée de auth.uid(). Anciennes versions
+-- (1, 2 arguments) supprimées.
 DROP FUNCTION IF EXISTS public.get_wallet_balance(uuid);
+DROP FUNCTION IF EXISTS public.get_wallet_balance(uuid, uuid);
 
-CREATE OR REPLACE FUNCTION public.get_wallet_balance(p_user_id uuid, p_session_token uuid)
+CREATE OR REPLACE FUNCTION public.get_wallet_balance()
 RETURNS integer
 LANGUAGE sql
 STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT coalesce(wallet_balance, 0) FROM public.profiles WHERE id = p_user_id AND session_token = p_session_token;
+  SELECT coalesce(wallet_balance, 0) FROM public.profiles WHERE id = auth.uid();
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_wallet_balance(uuid, uuid) TO anon;
+REVOKE ALL ON FUNCTION public.get_wallet_balance() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_wallet_balance() TO authenticated;

@@ -58,14 +58,12 @@ create policy "transactions_authenticated_update"
   with check (true);
 
 -- 4. RPC : créer une transaction + envoyer la commande machine (tout en un)
--- CRITIQUE #6 de l'audit : ancienne version (7 arguments) permettait d'attribuer une
--- transaction/un démarrage machine au compte de n'importe qui connaissant son UUID.
--- Remplacée par la version à 8 arguments qui exige le session_token.
+-- Migration #2 de l'audit (2026-07-06) : identité tirée de auth.uid(). Anciennes versions
+-- (7, 8 arguments) supprimées.
 drop function if exists public.create_transaction_and_start_machine(uuid, uuid, uuid, text, decimal, text, text);
+drop function if exists public.create_transaction_and_start_machine(uuid, uuid, uuid, uuid, text, decimal, text, text);
 
 create or replace function public.create_transaction_and_start_machine(
-  p_user_id uuid,
-  p_session_token uuid,
   p_machine_id uuid,
   p_emplacement_id uuid,
   p_esp32_id text,
@@ -79,10 +77,11 @@ security definer
 set search_path = public
 as $$
 declare
+  v_uid uuid := auth.uid();
   v_transaction_id uuid;
   v_command_id uuid;
 begin
-  if not exists (select 1 from public.profiles p where p.id = p_user_id and p.session_token = p_session_token) then
+  if v_uid is null then
     raise exception 'unauthorized';
   end if;
 
@@ -106,12 +105,12 @@ begin
 
   -- Créer la transaction
   insert into transactions (user_id, machine_id, emplacement_id, amount, payment_method, promo_code, status)
-  values (p_user_id, p_machine_id, p_emplacement_id, p_amount, p_payment_method, p_promo_code, 'completed')
+  values (v_uid, p_machine_id, p_emplacement_id, p_amount, p_payment_method, p_promo_code, 'completed')
   returning id into v_transaction_id;
 
   -- Créer la commande machine (ESP32)
   insert into machine_commands (esp32_id, command, status, user_id, transaction_id)
-  values (p_esp32_id, 'START', 'pending', p_user_id, v_transaction_id)
+  values (p_esp32_id, 'START', 'pending', v_uid, v_transaction_id)
   returning id into v_command_id;
 
   -- Lier la transaction à la commande
@@ -130,7 +129,8 @@ begin
 end;
 $$;
 
-grant execute on function public.create_transaction_and_start_machine(uuid, uuid, uuid, uuid, text, decimal, text, text) to anon;
+revoke all on function public.create_transaction_and_start_machine(uuid, uuid, text, decimal, text, text) from public;
+grant execute on function public.create_transaction_and_start_machine(uuid, uuid, text, decimal, text, text) to authenticated;
 
 -- 5. RPC : rembourser une transaction (depuis le dashboard Supabase ou une future interface admin)
 create or replace function public.refund_transaction(
@@ -156,8 +156,10 @@ $$;
 revoke all on function public.refund_transaction(uuid, text) from public;
 grant execute on function public.refund_transaction(uuid, text) to service_role;
 
--- 6. RPC get_user_transactions : NE PAS REJOUER la version ci-dessous (retirée).
--- Elle prenait un seul argument (p_user_id) sans session_token — CRITIQUE #6 de l'audit.
--- La version à jour (2 arguments, avec vérification du session_token) vit désormais dans
--- refund-request-response-and-promo.sql. La rejouer ici recréerait l'ancienne faille en
--- tant que second overload accessible à anon.
+-- 6. RPC get_user_transactions : NE PAS REJOUER une version à 1 argument (p_user_id) ici
+-- sans vérification — c'était CRITIQUE #6 de l'audit (accessible à anon). Deux versions
+-- légitimes existent désormais, définies ailleurs :
+--   - get_user_transactions() sans argument, identité via auth.uid() (app mobile, ses
+--     propres transactions) — dans refund-request-response-and-promo.sql.
+--   - get_user_transactions(p_user_id uuid), réservée aux comptes board patron (fiche
+--     client) — dans get-user-lookups-board.sql.

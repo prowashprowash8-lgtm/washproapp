@@ -92,8 +92,6 @@ async function enrichRefundStatusFallback(rows) {
  * @param {string} [params.promoCode] - Code promo utilisé si applicable
  */
 export async function createTransactionAndStartMachine({
-  userId,
-  sessionToken,
   machineId,
   emplacementId,
   esp32Id,
@@ -102,13 +100,11 @@ export async function createTransactionAndStartMachine({
   promoCode = null,
 }) {
   const normalizedEsp32Id = normalizeEsp32Id(esp32Id);
-  if (!supabase || !userId || !machineId || !emplacementId || !normalizedEsp32Id) {
+  if (!supabase || !machineId || !emplacementId || !normalizedEsp32Id) {
     return { success: false, error: 'Paramètres manquants' };
   }
 
   const { data, error } = await supabase.rpc('create_transaction_and_start_machine', {
-    p_user_id: userId,
-    p_session_token: sessionToken,
     p_machine_id: machineId,
     p_emplacement_id: emplacementId,
     p_esp32_id: normalizedEsp32Id,
@@ -129,8 +125,6 @@ export async function createTransactionAndStartMachine({
  * @param {number} params.priceCentimes - Montant à débiter (centimes)
  */
 export async function createTransactionAndPayWithWallet({
-  userId,
-  sessionToken,
   machineId,
   emplacementId,
   esp32Id,
@@ -138,13 +132,11 @@ export async function createTransactionAndPayWithWallet({
   priceCentimes,
 }) {
   const normalizedEsp32Id = normalizeEsp32Id(esp32Id);
-  if (!supabase || !userId || !machineId || !emplacementId || !normalizedEsp32Id) {
+  if (!supabase || !machineId || !emplacementId || !normalizedEsp32Id) {
     return { success: false, error: 'Paramètres manquants' };
   }
 
   const { data, error } = await supabase.rpc('create_transaction_and_pay_with_wallet', {
-    p_user_id: userId,
-    p_session_token: sessionToken,
     p_machine_id: machineId,
     p_emplacement_id: emplacementId,
     p_esp32_id: normalizedEsp32Id,
@@ -187,13 +179,10 @@ export async function setTransactionDuration(transactionId, minutes) {
 /**
  * Récupère les transactions d'un utilisateur (avec noms machine et emplacement)
  */
-export async function getUserTransactions(userId, sessionToken) {
-  if (!supabase || !userId) return { data: [], error: null };
+export async function getUserTransactions() {
+  if (!supabase) return { data: [], error: null };
 
-  const { data, error } = await supabase.rpc('get_user_transactions', {
-    p_user_id: userId,
-    p_session_token: sessionToken,
-  });
+  const { data, error } = await supabase.rpc('get_user_transactions');
 
   if (error) return { data: data || [], error };
 

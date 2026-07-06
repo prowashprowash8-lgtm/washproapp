@@ -17,14 +17,17 @@ const storage = Platform.OS === 'web'
   : AsyncStorage;
 
 // Créer le client uniquement si configuré (évite les erreurs avec URL vide)
+// Migration #2 (audit) : persistSession/autoRefreshToken volontairement à false — l'app
+// gère elle-même la persistance (son propre refresh_token en SecureStore/AsyncStorage) pour
+// ne jamais restaurer de session silencieusement au démarrage à froid (voir AuthContext.js).
 let supabaseClient = null;
 if (supabaseUrl && supabaseAnonKey) {
   supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
       storage,
-      autoRefreshToken: true,
-      persistSession: true,
-      detectSessionInUrl: Platform.OS === 'web',
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false,
     },
   });
 }

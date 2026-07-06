@@ -49,14 +49,14 @@ export default function WalletScreen({ navigation }) {
       }
       if (!silent) setLoading(true);
       try {
-        const bal = await getWalletBalance(user.id, user.session_token);
+        const bal = await getWalletBalance();
         setBalanceCentimes(bal.balanceCentimes);
       } catch (e) {
         if (__DEV__) console.warn('[Wallet] loadWalletData', e);
       }
       if (!silent) setLoading(false);
     },
-    [user?.id, user?.session_token],
+    [user?.id],
   );
 
   const refresh = useCallback(() => loadWalletData(false), [loadWalletData]);
@@ -69,7 +69,7 @@ export default function WalletScreen({ navigation }) {
         stopPostCheckoutPolling();
         return;
       }
-      const bal = await getWalletBalance(user.id, user.session_token);
+      const bal = await getWalletBalance();
       setBalanceCentimes(bal.balanceCentimes);
 
       const timedOut = Date.now() - startedAt >= POST_CHECKOUT_POLL_DURATION_MS;

@@ -7,7 +7,7 @@ import { supabase } from '../lib/supabase';
 /**
  * @param {string} code
  * @param {string} [machineId] - UUID machine (obligatoire pour la validation en base)
- * @returns {Promise<{ ok: true } | { ok: false, reason: 'invalid' | 'wrong_machine_type' }>}
+ * @returns {Promise<{ ok: true } | { ok: false, reason: 'invalid' | 'wrong_machine_type' | 'too_many_attempts' }>}
  */
 export async function validateAndUsePromoCode(code, machineId) {
   if (!code?.trim()) {
@@ -26,9 +26,10 @@ export async function validateAndUsePromoCode(code, machineId) {
   }
 
   try {
-    const { data, error } = await supabase.rpc('use_promo_code', {
-      p_code: trimmed,
-      p_machine_id: machineId,
+    // MOYENNE #9 de l'audit : passe par l'Edge Function (limite de tentatives par IP)
+    // plutôt que d'appeler la RPC use_promo_code directement.
+    const { data, error } = await supabase.functions.invoke('validate-promo-code', {
+      body: { p_code: trimmed, p_machine_id: machineId },
     });
     if (error) throw error;
 
@@ -37,6 +38,9 @@ export async function validateAndUsePromoCode(code, machineId) {
     }
     if (data?.error === 'wrong_machine_type') {
       return { ok: false, reason: 'wrong_machine_type' };
+    }
+    if (data?.error === 'too_many_attempts') {
+      return { ok: false, reason: 'too_many_attempts' };
     }
     return { ok: false, reason: 'invalid' };
   } catch {
@@ -48,13 +52,10 @@ export async function validateAndUsePromoCode(code, machineId) {
  * Codes promo liés aux remboursements acceptés, encore utilisables (côté utilisateur connecté).
  * @returns {Promise<{ data: Array<{ code: string, uses_remaining: number }>, error: Error | null }>}
  */
-export async function getUserAvailablePromoCodes(userId, sessionToken) {
-  if (!supabase || !userId) {
+export async function getUserAvailablePromoCodes() {
+  if (!supabase) {
     return { data: [], error: null };
   }
-  const { data, error } = await supabase.rpc('get_user_available_promo_codes', {
-    p_user_id: userId,
-    p_session_token: sessionToken,
-  });
+  const { data, error } = await supabase.rpc('get_user_available_promo_codes');
   return { data: data || [], error };
 }

@@ -123,7 +123,7 @@ export default function ForgotPasswordScreen({ navigation }) {
                 value={code}
                 onChangeText={setCode}
                 keyboardType="number-pad"
-                maxLength={6}
+                maxLength={10}
               />
 
               <Text style={styles.label}>{t('password')}</Text>

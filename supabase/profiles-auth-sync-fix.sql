@@ -49,6 +49,12 @@ on conflict (id) do update
 set email = excluded.email;
 
 -- 3) Trigger : à chaque nouvel utilisateur auth, créer/mettre à jour profiles
+-- Migration #2 de l'audit : sert désormais aussi aux vraies inscriptions de l'app mobile
+-- (supabase.auth.signUp), pas seulement à la synchro des comptes board.
+-- password_hash et session_token (ancien système maison) ont été supprimées de profiles
+-- le 2026-07-06 — ne plus les écrire ici (une version antérieure de ce trigger les écrivait
+-- encore avec un placeholder '__AUTH_MANAGED__', requis quand la colonne était encore
+-- NOT NULL sans défaut).
 create or replace function public.handle_new_auth_user_to_profile()
 returns trigger
 language plpgsql
@@ -56,14 +62,13 @@ security definer
 set search_path = public
 as $$
 begin
-  insert into public.profiles (id, email, password_hash, first_name, last_name, phone)
+  insert into public.profiles (id, email, first_name, last_name, phone)
   values (
     new.id,
     coalesce(new.email, ''),
-    '__AUTH_MANAGED__',
     new.raw_user_meta_data->>'first_name',
     new.raw_user_meta_data->>'last_name',
-    null
+    new.raw_user_meta_data->>'phone'
   )
   on conflict (id) do update
   set email = excluded.email;

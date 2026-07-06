@@ -77,8 +77,12 @@ begin
 end;
 $$;
 
-grant execute on function public.use_promo_code(text, uuid) to anon;
-grant execute on function public.use_promo_code(text, uuid) to authenticated;
+-- MOYENNE #9 de l'audit : plus d'accès direct pour anon/authenticated (grattage de codes
+-- possible sans compte). Tout appel passe désormais par l'Edge Function
+-- validate-promo-code (voir supabase/functions/validate-promo-code), qui limite les
+-- tentatives par IP avant d'appeler cette RPC via service_role.
+revoke all on function public.use_promo_code(text, uuid) from public;
+grant execute on function public.use_promo_code(text, uuid) to service_role;
 
 -- Exemples (décommenter et adapter les UUID si besoin) :
 -- insert into public.promo_codes (code, uses_remaining, applies_to) values ('LAVE2026', 50, 'lavage');

@@ -172,12 +172,14 @@ GRANT EXECUTE ON FUNCTION public.mark_refund_responses_seen(uuid) TO authenticat
 -- ----------------------------------------------------------------
 -- Transactions utilisateur : infos demande de remboursement
 -- (DROP + CREATE : PostgreSQL refuse de changer le type de retour avec CREATE OR REPLACE seul)
--- CRITIQUE #6 de l'audit : ancienne version (1 argument) lisible par n'importe qui connaissant
--- un UUID. Remplacée par la version à 2 arguments qui exige le session_token.
+-- Migration #2 de l'audit (2026-07-06) : identité tirée de auth.uid() (vraie session
+-- Supabase Auth) au lieu d'un p_user_id/p_session_token fournis par le client. Anciennes
+-- versions (1, 2 arguments) supprimées. Une version à 1 argument existe aussi, réservée au
+-- board (fiche client patron) — voir get-user-lookups-board.sql.
 -- ----------------------------------------------------------------
-DROP FUNCTION IF EXISTS public.get_user_transactions(uuid);
+DROP FUNCTION IF EXISTS public.get_user_transactions(uuid, uuid);
 
-CREATE OR REPLACE FUNCTION public.get_user_transactions(p_user_id uuid, p_session_token uuid)
+CREATE OR REPLACE FUNCTION public.get_user_transactions()
 RETURNS TABLE (
   id uuid,
   amount decimal,
@@ -197,10 +199,10 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
+DECLARE
+  v_uid uuid := auth.uid();
 BEGIN
-  -- "profiles p" obligatoire ici : sans alias, "id" est ambigu avec la colonne "id" que
-  -- cette fonction renvoie elle-même (RETURNS TABLE(id uuid, ...)).
-  IF NOT EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = p_user_id AND p.session_token = p_session_token) THEN
+  IF v_uid IS NULL THEN
     RETURN;
   END IF;
 
@@ -239,22 +241,23 @@ BEGIN
     ORDER BY rr2.created_at DESC
     LIMIT 1
   ) rr ON true
-  WHERE t.user_id = p_user_id
+  WHERE t.user_id = v_uid
   ORDER BY t.created_at DESC;
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION public.get_user_transactions(uuid, uuid) TO anon;
-GRANT EXECUTE ON FUNCTION public.get_user_transactions(uuid, uuid) TO authenticated;
+REVOKE ALL ON FUNCTION public.get_user_transactions() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_user_transactions() TO authenticated;
 
 -- ----------------------------------------------------------------
 -- Codes promo disponibles au moment du paiement (modal app)
--- CRITIQUE #6 de l'audit : ancienne version (1 argument) lisible par n'importe qui connaissant
--- un UUID. Remplacée par la version à 2 arguments qui exige le session_token.
+-- Migration #2 de l'audit (2026-07-06) : identité tirée de auth.uid(). Anciennes versions
+-- (1, 2 arguments) supprimées.
 -- ----------------------------------------------------------------
 DROP FUNCTION IF EXISTS public.get_user_available_promo_codes(uuid);
+DROP FUNCTION IF EXISTS public.get_user_available_promo_codes(uuid, uuid);
 
-CREATE OR REPLACE FUNCTION public.get_user_available_promo_codes(p_user_id uuid, p_session_token uuid)
+CREATE OR REPLACE FUNCTION public.get_user_available_promo_codes()
 RETURNS TABLE (
   code text,
   uses_remaining integer,
@@ -265,8 +268,10 @@ SECURITY DEFINER
 STABLE
 SET search_path = public
 AS $$
+DECLARE
+  v_uid uuid := auth.uid();
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM public.profiles WHERE id = p_user_id AND session_token = p_session_token) THEN
+  IF v_uid IS NULL THEN
     RETURN;
   END IF;
 
@@ -278,7 +283,7 @@ BEGIN
   FROM public.refund_requests rr
   INNER JOIN public.promo_codes pc
     ON upper(trim(pc.code)) = upper(trim(rr.compensation_promo_code))
-  WHERE rr.user_id = p_user_id
+  WHERE rr.user_id = v_uid
     AND rr.statut = 'approved'
     AND rr.compensation_promo_code IS NOT NULL
     AND COALESCE(pc.uses_remaining, 0) > 0
@@ -286,6 +291,5 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.get_user_available_promo_codes(uuid, uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.get_user_available_promo_codes(uuid, uuid) TO anon;
-GRANT EXECUTE ON FUNCTION public.get_user_available_promo_codes(uuid, uuid) TO authenticated;
+REVOKE ALL ON FUNCTION public.get_user_available_promo_codes() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_user_available_promo_codes() TO authenticated;

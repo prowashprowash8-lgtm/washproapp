@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import * as SecureStore from 'expo-secure-store';
-import { supabase, isSupabaseConfigured, getSupabasePublicConfig } from '../lib/supabase';
+import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { clearLegacySavedLaundry, migrateLegacyForUser } from '../utils/laundryStorage';
@@ -29,6 +29,32 @@ async function getStoredUser() {
   }
 }
 
+/**
+ * Migration #2 (audit) : profiles reste la source de vérité pour prénom/nom/téléphone
+ * (auth.users.user_metadata n'est mis à jour qu'à l'inscription, pas après update_profile).
+ */
+async function fetchProfile(uid) {
+  const { data } = await supabase
+    .from('profiles')
+    .select('email, first_name, last_name, phone')
+    .eq('id', uid)
+    .maybeSingle();
+  return data;
+}
+
+function buildUserData(session, profile) {
+  return {
+    id: session.user.id,
+    email: profile?.email || session.user.email,
+    refresh_token: session.refresh_token,
+    user_metadata: {
+      first_name: profile?.first_name || '',
+      last_name: profile?.last_name || '',
+      phone: profile?.phone || '',
+    },
+  };
+}
+
 const AuthContext = createContext({});
 
 export function AuthProvider({ children }) {
@@ -44,6 +70,10 @@ export function AuthProvider({ children }) {
       return;
     }
 
+    // Migration #2 (audit) : on ne restaure JAMAIS la session automatiquement ici — l'app
+    // affiche toujours l'écran de connexion au démarrage à froid. Le blob stocké ne sert
+    // qu'à savoir si le bouton Face ID doit s'afficher (voir biometricAuth.js) et à migrer
+    // les anciennes données locales.
     getStoredUser().then(async (storedUser) => {
       if (storedUser?.id) {
         await migrateLegacyForUser(storedUser.id);
@@ -79,52 +109,51 @@ export function AuthProvider({ children }) {
     }
   };
 
-  // Déconnexion : on garde les credentials en SecureStore pour permettre Face ID au prochain login
+  // Déconnexion "douce" : on garde le refresh_token en SecureStore pour permettre Face ID
+  // au prochain lancement — supabase.auth.signOut() révoquerait ce refresh_token côté
+  // serveur (y compris en scope 'local'), ce qui casserait Face ID. Comportement identique
+  // à avant la migration : rien n'est invalidé côté serveur à la déconnexion.
   const clearUserOnly = () => setUser(null);
 
   const signIn = async (email, password) => {
-    const { data, error } = await supabase.rpc('sign_in', {
-      p_email: email.trim(),
-      p_password: password,
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
     });
-    if (error) throw error;
-    if (!data) throw new Error('Email ou mot de passe incorrect');
-    const userData = {
-      id: data.id,
-      email: data.email,
-      session_token: data.session_token,
-      user_metadata: {
-        first_name: data.first_name,
-        last_name: data.last_name,
-        phone: data.phone || '',
-      },
-    };
+    if (error) throw new Error('Email ou mot de passe incorrect');
+    if (!data?.session) throw new Error('Email ou mot de passe incorrect');
+
+    const profile = await fetchProfile(data.session.user.id);
+    const userData = buildUserData(data.session, profile);
     await migrateLegacyForUser(userData.id);
     await persistUser(userData);
     return { user: userData };
   };
 
   const signUp = async (email, password, metadata = {}) => {
-    const { data, error } = await supabase.rpc('sign_up', {
-      p_email: email.trim(),
-      p_password: password,
-      p_first_name: metadata.first_name || '',
-      p_last_name: metadata.last_name || '',
-      p_phone: metadata.phone || '',
+    const { data, error } = await supabase.auth.signUp({
+      email: email.trim(),
+      password,
+      options: {
+        data: {
+          first_name: metadata.first_name || '',
+          last_name: metadata.last_name || '',
+          phone: metadata.phone || '',
+        },
+      },
     });
     if (error) {
-      throw new Error(error.message || 'Impossible de créer le compte. Vérifiez que supabase/profiles-auth.sql a été exécuté.');
+      throw new Error(error.message || 'Impossible de créer le compte.');
     }
-    const userData = {
-      id: data.id,
-      email: data.email,
-      session_token: data.session_token,
-      user_metadata: {
-        first_name: data.first_name,
-        last_name: data.last_name,
-        phone: data.phone || '',
-      },
-    };
+    if (!data?.session) {
+      // "Confirm email" est activé côté projet Supabase : pas de session immédiate.
+      throw new Error(
+        'Compte créé, mais aucune session retournée. Vérifie que "Confirm email" est désactivé dans Supabase → Authentication → Providers.'
+      );
+    }
+
+    const profile = await fetchProfile(data.session.user.id);
+    const userData = buildUserData(data.session, profile);
     await clearLegacySavedLaundry();
     await persistUser(userData);
     return { user: userData };
@@ -139,61 +168,35 @@ export function AuthProvider({ children }) {
   };
 
   /**
-   * Mot de passe oublié : Edge Function `request-password-reset` (e-mail via Resend).
-   * Le code n’est pas dans la réponse en production ; en dev, `ALLOW_DEV_RESET_CODE` peut renvoyer `code`.
+   * Mot de passe oublié : OTP natif Supabase Auth (code à 6 chiffres par email), au lieu
+   * de la table maison password_reset_codes (migration #2 de l'audit).
    */
   const requestPasswordReset = async (email) => {
-    const { supabaseUrl: url, supabaseAnonKey: anon } = getSupabasePublicConfig();
-    if (!url || !anon) {
-      throw new Error('Supabase non configuré');
-    }
-    const fnUrl = `${url.replace(/\/$/, '')}/functions/v1/request-password-reset`;
-    const res = await fetch(fnUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${anon}`,
-        apikey: anon,
-      },
-      body: JSON.stringify({ email: email.trim() }),
-    });
-    const raw = await res.text();
-    let json = {};
-    try {
-      json = raw ? JSON.parse(raw) : {};
-    } catch {
-      json = {
-        error: raw
-          ? `Réponse invalide (${res.status}). ${String(raw).slice(0, 200)}`
-          : `Erreur HTTP ${res.status}`,
-      };
-    }
-    if (!res.ok) {
-      const base = json.error || `Erreur ${res.status}`;
-      const bits = [json.detail, json.help].filter(Boolean).map((x) => String(x).slice(0, 300));
-      const extra = bits.length ? `\n${bits.join('\n')}` : '';
-      throw new Error(base + extra);
-    }
-    if (json.error) throw new Error(json.error);
-    return { code: json.code, dev: Boolean(json.dev), success: Boolean(json.success) };
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim());
+    if (error) throw new Error(error.message || 'Erreur');
+    return { success: true };
   };
 
   const resetPasswordWithCode = async (email, code, newPassword) => {
-    const { data, error } = await supabase.rpc('reset_password_with_code', {
-      p_email: email.trim(),
-      p_code: code.trim(),
-      p_new_password: newPassword,
+    const { data, error } = await supabase.auth.verifyOtp({
+      email: email.trim(),
+      token: code.trim(),
+      type: 'recovery',
     });
-    if (error) throw new Error(error.message || 'Erreur');
-    if (!data) throw new Error('Code invalide ou expiré');
+    if (error) throw new Error('Code invalide ou expiré');
+    if (!data?.session) throw new Error('Code invalide ou expiré');
+
+    const { error: updateErr } = await supabase.auth.updateUser({ password: newPassword });
+    if (updateErr) throw new Error(updateErr.message || 'Erreur');
+
+    // Ne pas connecter automatiquement : l'utilisateur repasse par l'écran de connexion
+    // normal avec son nouveau mot de passe (cohérent avec "pas de reconnexion silencieuse").
     return true;
   };
 
   const updateUser = async ({ first_name, last_name, email, phone } = {}) => {
     if (!user?.id) throw new Error('Non connecté');
     const { data, error } = await supabase.rpc('update_profile', {
-      p_user_id: user.id,
-      p_session_token: user.session_token,
       p_first_name: first_name ?? user?.user_metadata?.first_name ?? '',
       p_last_name: last_name ?? user?.user_metadata?.last_name ?? '',
       p_email: (email ?? user.email ?? '').trim(),
@@ -224,18 +227,21 @@ export function AuthProvider({ children }) {
 
   const changePassword = async (currentPassword, newPassword) => {
     if (!user?.id || !user?.email) throw new Error('Non connecté');
-    const { data, error } = await supabase.rpc('change_password', {
-      p_user_id: user.id,
-      p_session_token: user.session_token,
-      p_current_password: currentPassword,
-      p_new_password: newPassword,
+    // Re-vérifie le mot de passe actuel via une vraie connexion (Supabase Auth ne le
+    // redemande pas pour updateUser() puisque la session est déjà authentifiée) — préserve
+    // le même niveau de sécurité qu'avant la migration.
+    const { data: reauth, error: reauthErr } = await supabase.auth.signInWithPassword({
+      email: user.email,
+      password: currentPassword,
     });
-    if (error) throw new Error(error.message || 'Erreur');
-    if (!data?.success) {
-      throw new Error(data?.error === 'unauthorized' ? 'Session expirée, reconnecte-toi' : 'Mot de passe actuel incorrect');
+    if (reauthErr || !reauth?.session) {
+      throw new Error('Mot de passe actuel incorrect');
     }
-    // Le mot de passe change fait tourner le session_token côté serveur : on met à jour la copie locale.
-    await persistUser({ ...user, session_token: data.session_token });
+
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) throw new Error(error.message || 'Erreur');
+
+    await persistUser({ ...user, refresh_token: reauth.session.refresh_token });
   };
 
   const signInWithBiometric = async () => {
@@ -243,7 +249,7 @@ export function AuthProvider({ children }) {
     const userData = await authenticateWithBiometric();
     if (userData) {
       await migrateLegacyForUser(userData.id);
-      setUser(userData);
+      await persistUser(userData);
       return { user: userData };
     }
     throw new Error('Authentification annulée ou échouée');
