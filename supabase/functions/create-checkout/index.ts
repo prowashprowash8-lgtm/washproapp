@@ -78,6 +78,26 @@ function getServiceRoleKey(): string {
   return '';
 }
 
+/**
+ * Trouvé dans un audit externe (2026-07-06) : cette fonction faisait confiance au champ
+ * `user_id` envoyé tel quel dans le corps JSON, sans vérifier qu'il correspondait vraiment
+ * à l'appelant — n'importe qui connaissant l'URL pouvait attribuer un paiement/une recharge
+ * à l'UUID de son choix. On extrait maintenant l'identité depuis le vrai jeton de session
+ * (Authorization: Bearer <access_token>), jamais depuis le body.
+ */
+async function getAuthenticatedUserId(req: Request): Promise<string | null> {
+  const authHeader = req.headers.get('Authorization') || '';
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  const supabaseUrl = Deno.env.get('SUPABASE_URL') || '';
+  const anonKey = Deno.env.get('SUPABASE_ANON_KEY') || '';
+  if (!token || !supabaseUrl || !anonKey) return null;
+
+  const client = createClient(supabaseUrl, anonKey);
+  const { data, error } = await client.auth.getUser(token);
+  if (error || !data?.user) return null;
+  return data.user.id;
+}
+
 /** Stripe Checkout exige des URLs https ; washproapp:// est remplacé. */
 function safeCancelUrl(cancelUrl: string | undefined, fallbackHttps: string) {
   const u = (cancelUrl || '').trim();
@@ -147,7 +167,6 @@ Deno.serve(async (req) => {
       amount,
       machineName,
       esp32_id,
-      user_id,
       machine_id,
       emplacement_id,
       success_url,
@@ -157,7 +176,6 @@ Deno.serve(async (req) => {
       amount?: number;
       machineName?: string;
       esp32_id?: string;
-      user_id?: string;
       machine_id?: string;
       emplacement_id?: string;
       success_url?: string;
@@ -165,16 +183,19 @@ Deno.serve(async (req) => {
       checkout_kind?: string;
     };
 
+    // CRITIQUE de l'audit (2026-07-06) : l'identité vient du jeton de session vérifié,
+    // jamais d'un user_id fourni par le client.
+    const uid = await getAuthenticatedUserId(req);
+    if (!uid) {
+      return jsonResponse({ error: 'unauthorized' }, 401);
+    }
+
     const supabaseOrigin = (Deno.env.get('SUPABASE_URL') || '').replace(/\/$/, '');
     const defaultHttps = supabaseOrigin
       ? `${supabaseOrigin}/functions/v1/payment-success`
       : 'https://washproapp.com/success';
 
     const isWallet = String(checkout_kind || '').trim() === 'wallet_recharge';
-    const uid = String(user_id || '').trim();
-    if (isWallet && uid.length < 10) {
-      return jsonResponse({ error: 'user_id requis pour la recharge portefeuille' }, 400);
-    }
 
     // CRITIQUE #3 de l'audit : ne jamais faire confiance à `amount` envoyé par le client.
     // - Recharge portefeuille : whitelist stricte (alignée sur RECHARGE_AMOUNTS de WalletScreen.js).

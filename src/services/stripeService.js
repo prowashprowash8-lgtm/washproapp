@@ -75,11 +75,14 @@ export async function createCheckoutAndPay({
         };
       }
       try {
+        // L'Edge Function vérifie maintenant le vrai jeton de session (pas la clé anon).
+        const { data: sessionData } = await supabase.auth.getSession();
+        const accessToken = sessionData?.session?.access_token || anonKey;
         const res = await fetch(`${baseUrl}/functions/v1/create-checkout`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${anonKey}`,
+            Authorization: `Bearer ${accessToken}`,
             apikey: anonKey,
           },
           body: JSON.stringify(payload),
@@ -203,11 +206,14 @@ export async function createWalletCheckout({ userId, amountEur }) {
         };
       }
       try {
+        // L'Edge Function vérifie maintenant le vrai jeton de session (pas la clé anon).
+        const { data: sessionData } = await supabase.auth.getSession();
+        const accessToken = sessionData?.session?.access_token || anonKey;
         const res = await fetch(`${baseUrl}/functions/v1/create-checkout`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${anonKey}`,
+            Authorization: `Bearer ${accessToken}`,
             apikey: anonKey,
           },
           body: JSON.stringify(payload),

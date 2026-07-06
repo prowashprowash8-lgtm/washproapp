@@ -16,8 +16,13 @@
 // CONFIG — à adapter
 // ---------------------------------------------------------------------------
 
-const char* WIFI_SSID = "link";
-const char* WIFI_PASSWORD = "123456789";
+// Trouvé dans un audit externe (2026-07-06) : ce fichier est suivi par git — n'y mets
+// JAMAIS le vrai SSID/mot de passe WiFi ni le vrai DEVICE_SECRET. Remplace les valeurs
+// ci-dessous par les vraies UNIQUEMENT dans l'IDE Arduino avant de flasher, sans committer
+// ce changement (git checkout firmware/washpro-esp32/washpro-esp32.ino pour annuler avant
+// de push, ou garde une copie locale à part).
+const char* WIFI_SSID = "TON_SSID_ICI";
+const char* WIFI_PASSWORD = "TON_MOT_DE_PASSE_ICI";
 
 const char* SUPABASE_URL = "https://ftechtqyocgdabfkmclm.supabase.co";
 const char* SUPABASE_ANON =
@@ -29,11 +34,12 @@ const char* SUPABASE_ANON =
  * des commandes de démarrage déjà payées sans avoir de machine physique.
  * Ne JAMAIS réutiliser la même valeur sur deux boîtiers.
  *
- * Pour un NOUVEL ESP32 : dans Supabase → SQL Editor, exécuter
- *   select public.provision_esp32_device('WASH_PRO_00X');
- * Le résultat donne directement les deux lignes ESP32_ID / DEVICE_SECRET à coller ici. */
+ * Pour un NOUVEL ESP32 (ou pour régénérer un secret compromis) : dans Supabase → SQL Editor,
+ * exécuter select public.provision_esp32_device('WASH_PRO_00X'); Le résultat donne les deux
+ * lignes ESP32_ID / DEVICE_SECRET à coller ici EN LOCAL UNIQUEMENT (voir note WiFi ci-dessus
+ * — ne jamais committer la vraie valeur). */
 const char* ESP32_ID = "WASH_PRO_001";
-const char* DEVICE_SECRET = "360d139c519f55ac4ed39fe19ad88789108a436bad51f826";
+const char* DEVICE_SECRET = "COLLER_ICI_EN_LOCAL_SANS_COMMIT";
 const int MACHINE_RELAY_ID = 1;
 
 /** Optionnel : UUID Supabase de la ligne machines (32+ car.) pour PATCH / RPC secours si besoin */
